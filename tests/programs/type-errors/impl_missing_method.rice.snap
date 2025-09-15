@@ -1,0 +1,16 @@
+---
+source: tests/snapshots.rs
+expression: output
+---
+success = false
+stdout = ''
+stderr = '''
+Error:   × impl is missing method `bloop`
+   ╭─[impl_missing_method.rice:7:14]
+ 6 │ 
+ 7 │ impl Bar for Foo {}
+   ·              ───
+ 8 │ 
+   ╰────
+
+'''

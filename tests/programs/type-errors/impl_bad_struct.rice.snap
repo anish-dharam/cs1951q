@@ -1,0 +1,16 @@
+---
+source: tests/snapshots.rs
+expression: output
+---
+success = false
+stdout = ''
+stderr = '''
+Error:   × Struct Foo has not been defined
+   ╭─[impl_bad_struct.rice:3:14]
+ 2 │ 
+ 3 │ impl Bar for Foo {}
+   ·              ───
+ 4 │ 
+   ╰────
+
+'''

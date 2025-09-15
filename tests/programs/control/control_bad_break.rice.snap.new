@@ -1,0 +1,17 @@
+---
+source: tests/snapshots.rs
+assertion_line: 54
+expression: output
+---
+success = false
+stdout = ''
+stderr = '''
+Error:   × undefined variable `break`
+   ╭─[control_bad_break.rice:3:3]
+ 2 │   let x = 1 in
+ 3 │   break
+   ·   ─────
+ 4 │ }
+   ╰────
+
+'''

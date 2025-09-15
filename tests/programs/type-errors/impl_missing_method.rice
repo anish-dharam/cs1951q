@@ -1,0 +1,9 @@
+interface Bar {
+  fn bloop(Self, int) -> int;
+}
+
+struct Foo(int);
+
+impl Bar for Foo {}
+
+fn main() { () }

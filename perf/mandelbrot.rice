@@ -1,0 +1,64 @@
+fn mandelbrot(n: int) {
+  let w = n in
+  let h = n in
+  let iter = 50 in
+  let limit = 2.0 in
+  let byte_acc = 0 in
+  let bit_num = 0 in
+
+  println("P4");
+  print(int_to_string(w));
+  print(" ");
+  print(int_to_string(h));
+  println("");
+
+  let y = 0 in
+  while y < h {
+    let x = 0 in
+    while x < w {      
+      let zr = 0. in
+      let zi = 0. in
+      let tr = 0. in
+      let ti = 0. in
+      let cr = 2. * (x as float) / (w as float) - 1.5 in
+      let ci = 2. * (y as float) / (h as float) - 1.0 in
+
+      let i = 0 in
+      while i < iter && tr + ti <= limit * limit {        
+        zi := 2. * zr * zi + ci;
+        zr := tr - ti + cr;
+        tr := zr * zr;
+        ti := zi * zi;
+
+        i := i + 1        
+      };
+
+      byte_acc := byte_acc << 1;
+      if tr + ti <= limit * limit {
+        byte_acc := byte_acc | 1
+      };
+
+      bit_num := bit_num + 1;
+      if bit_num == 8 {
+        putb(byte_acc);
+        byte_acc := 0;
+        bit_num := 0
+      } else {
+        if x == w - 1 {
+          byte_acc := byte_acc << (8 - n % 8);
+          putb(byte_acc);
+          byte_acc := 0;
+          bit_num := 0
+        }
+      };
+
+      x := x + 1
+    };
+
+    y := y + 1
+  }
+}
+
+fn main() {
+  mandelbrot(400)
+}

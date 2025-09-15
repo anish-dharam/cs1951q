@@ -1,0 +1,7 @@
+#[jit] fn add(a: int, b: int) -> int { a + b }
+
+fn main() {
+  let y = 88 in
+  let f: fn (int) -> () = \(z : int) -> (). println(int_to_string(add(z,y))) in
+  f(99)  
+}

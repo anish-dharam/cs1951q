@@ -1,0 +1,13 @@
+#[jit] fn call_jit(f: fn (int) -> int, x: int) -> int { f(x) }
+fn call_host(f: fn (int) -> int, x: int) -> int { f(x) }
+
+#[jit] fn inc_jit(y: int) -> int { y + 1 }
+fn inc_host(y: int) -> int { y + 1 }
+
+fn main() {
+  let x = 88 in
+  println(int_to_string(call_jit(inc_host, x)));
+  println(int_to_string(call_jit(inc_jit, x)));
+  println(int_to_string(call_host(inc_host, x)));
+  println(int_to_string(call_host(inc_jit, x)))
+}

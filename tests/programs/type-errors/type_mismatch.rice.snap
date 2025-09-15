@@ -1,0 +1,17 @@
+---
+source: tests/snapshots.rs
+expression: output
+---
+success = false
+stdout = ''
+stderr = '''
+Error:   × type mismatch
+   ╭─[type_mismatch.rice:3:7]
+ 2 │   let x = "" in
+ 3 │   1 + x; ()
+   ·       ┬
+   ·       ╰── expected `int`, found `string`
+ 4 │ }
+   ╰────
+
+'''

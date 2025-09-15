@@ -1,0 +1,16 @@
+---
+source: tests/snapshots.rs
+expression: output
+---
+success = false
+stdout = ''
+stderr = '''
+Error:   × methods can only be called on objects
+   ╭─[impl_prim_method.rice:6:3]
+ 5 │ fn main() { 
+ 6 │   (1).bloop(0); ()
+   ·   ────────────
+ 7 │ }
+   ╰────
+
+'''

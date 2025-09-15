@@ -1,0 +1,6 @@
+#[jit]
+fn main() {
+  let x = (1, 2) in
+  x.0 := 3;
+  println(int_to_string(x.0 + x.1))
+}

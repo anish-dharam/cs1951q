@@ -1,0 +1,16 @@
+---
+source: tests/snapshots.rs
+expression: output
+---
+success = false
+stdout = ''
+stderr = '''
+Error:   × interface Bar is not implemented for type Foo
+   ╭─[impl_bad_cast.rice:8:3]
+ 7 │ fn main() { 
+ 8 │   (new Foo(0)) as @Bar; ()
+   ·   ────────────────────
+ 9 │ }
+   ╰────
+
+'''

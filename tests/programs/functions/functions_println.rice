@@ -1,0 +1,4 @@
+fn main() {
+  let y = 88 in
+  println(int_to_string(y))
+}

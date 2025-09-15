@@ -1,0 +1,5 @@
+struct Foo(i32);
+
+impl Bar for Foo {}
+
+fn main() { () }

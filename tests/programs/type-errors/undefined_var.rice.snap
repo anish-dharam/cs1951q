@@ -1,0 +1,16 @@
+---
+source: tests/snapshots.rs
+expression: output
+---
+success = false
+stdout = ''
+stderr = '''
+Error:   × undefined variable `x`
+   ╭─[undefined_var.rice:2:7]
+ 1 │ fn main() {
+ 2 │   1 + x; ()
+   ·       ─
+ 3 │ }
+   ╰────
+
+'''

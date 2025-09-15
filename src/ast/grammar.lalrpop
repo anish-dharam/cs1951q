@@ -1,0 +1,250 @@
+use crate::ast::{Input, types::*};
+use crate::utils::Symbol;
+use ordered_float::OrderedFloat;
+use std::cell::Cell;
+use miette::SourceCode;
+
+grammar(counter: &Cell<usize>, source: &Input);
+
+Comma<T>: Vec<T> = { // (1)
+    <mut v:(<T> ",")*> <e:T?> => match e { // (2)
+        None => v,
+        Some(e) => {
+            v.push(e);
+            v
+        }
+    }
+};
+
+Semi<T>: Vec<T> = { // (1)
+    <mut v:(<T> ";")*> <e:T?> => match e { // (2)
+        None => v,
+        Some(e) => {
+            v.push(e);
+            v
+        }
+    }
+};
+
+
+Spanned<T>: Spanned<T> = {
+    <start:@L> <value:T> <end:@R> => Spanned { value, span: Span { start: start as u32, end: end as u32 } }
+}
+
+pub Program: Program = <items:Item*> => Program(items);
+
+Annotation: Annotation = {
+    "#[" <name:Ident> "]" => Annotation { name: name.to_string() }
+}
+
+Item: Item = {
+    <func:Function> => Item::Function(func),
+    <def:StructDef> => Item::StructDef(def),
+    <intf:Interface> => Item::Interface(intf),
+    <impl_:Impl> => Item::Impl(impl_),
+}
+
+Interface: Interface = {
+    "interface" <name:Spanned<Ident>> "{" <methods:MethodSig*> "}" =>
+        Interface { name, methods }
+}
+
+MethodSig: MethodSig = {
+    "fn" <name:Spanned<Ident>> <sig:FnSig> ";" => MethodSig { name, sig }
+}
+
+StructDef: StructDef = {
+    "struct" <name:Ident> "(" <params:Comma<Type>> ")" ";" =>
+        StructDef { name, params }
+}
+
+Impl: Impl = {
+    "impl" <intf:Spanned<Ident>> "for" <ty:Spanned<Ident>> "{" <funcs:Function*> "}" => Impl { intf, ty, funcs }
+}
+
+Function: Function = {
+    <annots:Annotation*> "fn" <name:Spanned<Ident>> "(" <params:Comma<Param>> ")" <ret_ty:("->" <Type>)?> <body:Spanned<BlockExpr>> =>
+        Function { name, params, ret_ty, body, annots },
+};
+
+Param: (Symbol, Type) = {
+    <name:Ident> ":" <ty:Type> => (name, ty)
+};
+
+Const: Const = {
+    <b:Bool> => Const::Bool(b),
+    <n:Num> => Const::Int(n),
+    <f:Float> => Const::Float(OrderedFloat(f)),
+    <s:String> => Const::String(s),
+}
+
+AtomicExpr: ExprKind = {
+    <name:Ident> => ExprKind::Var(name),
+    <c:Const> => ExprKind::Const(c),
+    <e:Spanned<AtomicExpr>> "." <i:Num> => ExprKind::Project { e: Box::new(e), i: i as usize },
+    <receiver:Spanned<AtomicExpr>> "." <method:Ident> "(" <args:Comma<Spanned<Expr>>> ")" =>
+        ExprKind::MethodCall { receiver: Box::new(receiver), method, args },
+
+    "new" <name:Ident> "(" <args:Comma<Spanned<Expr>>> ")" =>
+        ExprKind::New { name, args },
+
+    "(" ")" => ExprKind::Tuple(Vec::new()),
+    "(" <e1:Spanned<Expr>> "," <mut exprs:Comma<Spanned<Expr>>> ")" => {
+        exprs.insert(0, e1);
+        ExprKind::Tuple(exprs)
+    },
+    "(" <e:Expr> ")" => e,
+}
+
+AppExpr: ExprKind = {
+    AtomicExpr,
+
+    <f:Spanned<AtomicExpr>> "(" <mut args:Comma<Spanned<Expr>>> ")" => {
+        if let ExprKind::Var(name) = &f.value
+            && name.as_str() == "assert"
+            && let Some(pred) = args.get(0)
+        {
+            let source = source.as_source();
+            let contents = source
+                .read_span(&miette::SourceSpan::from(pred.span), 0, 0)
+                .unwrap();
+            let text = str::from_utf8(contents.data()).unwrap();
+            let span = pred.span;
+            args.push(Spanned {
+                span,
+                value: ExprKind::Const(Const::String(text.to_string())),
+            });
+            args.push(Spanned {
+                span,
+                value: ExprKind::Const(Const::Int((contents.line() + 1) as i32))
+            });
+        }
+
+        ExprKind::Call { f: Box::new(f), args }
+    },    
+}
+
+InfixExpr: ExprKind = {
+    #[precedence(level = "0")]
+    AppExpr,
+    <e:Spanned<AppExpr>> "as" <ty:Type> => ExprKind::Cast { e: Box::new(e), ty },
+
+    #[precedence(level = "1")] #[assoc(side = "left")]
+    <l:Spanned<InfixExpr>> <op:BinopTier0> <r:Spanned<InfixExpr>> => ExprKind::Binop { left: Box::new(l), op, right: Box::new(r) },
+
+    #[precedence(level = "2")] #[assoc(side = "left")]
+    <l:Spanned<InfixExpr>> <op:BinopTier1> <r:Spanned<InfixExpr>> => ExprKind::Binop { left: Box::new(l), op, right: Box::new(r) },
+
+    #[precedence(level = "3")] #[assoc(side = "left")]
+    <l:Spanned<InfixExpr>> <op:BinopTier2> <r:Spanned<InfixExpr>> => ExprKind::Binop { left: Box::new(l), op, right: Box::new(r) },
+
+    #[precedence(level = "4")] #[assoc(side = "left")]
+    <l:Spanned<InfixExpr>> <op:BinopTier3> <r:Spanned<InfixExpr>> => ExprKind::Binop { left: Box::new(l), op, right: Box::new(r) },
+
+    #[precedence(level = "5")] #[assoc(side = "left")]
+    <l:Spanned<InfixExpr>> <op:BinopTier4> <r:Spanned<InfixExpr>> => ExprKind::Binop { left: Box::new(l), op, right: Box::new(r) },
+}
+
+StmtExpr: ExprKind = {
+    InfixExpr,
+
+    "\\" "(" <params:Comma<Param>> ")"  "->" <ret_ty:Type> "." <body:Spanned<StmtExpr>> =>
+        ExprKind::Lambda { params, ret_ty, body: Box::new(body) },
+
+    <dst:Spanned<InfixExpr>> ":=" <src:Spanned<StmtExpr>> => ExprKind::Assign { dst: Box::new(dst), src: Box::new(src) },
+
+    "if" <cond:Spanned<Expr>> <then_:Spanned<BlockExpr>> <else_:("else" <Spanned<BlockExpr>>)?> =>
+        ExprKind::If { cond: Box::new(cond), then_: Box::new(then_), else_: else_.map(Box::new) },
+
+    "loop" <body:Spanned<BlockExpr>> => ExprKind::Loop(Box::new(body)),
+
+    "while" <cond:Spanned<Expr>> <body:Spanned<BlockExpr>> => ExprKind::While { cond: Box::new(cond), body: Box::new(body) },
+
+    "return" <expr:Spanned<StmtExpr>> => ExprKind::Return(Box::new(expr)),    
+}
+
+pub Expr: ExprKind = {
+    StmtExpr,
+
+    "let" <name:Ident> <ty:(":" <Type>)?> "=" <e1:Spanned<Expr>> "in" <e2:Spanned<Expr>> =>
+        ExprKind::Let { name, ty, e1: Box::new(e1), e2: Box::new(e2) },
+
+    <e1:Spanned<StmtExpr>> ";" <e2:Spanned<Expr>> => ExprKind::Seq(Box::new(e1), Box::new(e2))
+}
+
+BlockExpr: ExprKind = {
+    "{" <e:Expr> "}" => e
+}
+
+BinopTier0: Binop = {
+    "*" => Binop::Mul,
+    "/" => Binop::Div,
+    "%" => Binop::Rem,
+    "**" => Binop::Exp,
+}
+
+BinopTier1: Binop = {
+    "+" => Binop::Add,
+    "-" => Binop::Sub,
+}
+
+BinopTier2: Binop = {
+    "<<" => Binop::Shl,
+    ">>" => Binop::Shr,
+    "|" => Binop::BitOr,
+    "^" => Binop::Concat,
+}
+
+BinopTier3: Binop = {
+    "==" => Binop::Eq,
+    "!=" => Binop::Neq,
+    "<" => Binop::Lt,
+    ">" => Binop::Gt,
+    "<=" => Binop::Le,
+    ">=" => Binop::Ge,
+}
+
+BinopTier4: Binop = {
+    "&&" => Binop::And,
+    "||" => Binop::Or,
+}
+
+pub Binop: Binop = {
+    BinopTier0,
+    BinopTier1,
+    BinopTier2,
+    BinopTier3,
+    BinopTier4
+}
+
+Type: Type = {
+    "int" => Type::int(),
+    "float" => Type::float(),
+    "bool" => Type::bool(),
+    "string" => Type::string(),
+    "Self" => Type::self_(),
+    "_" => Type::hole(counter.replace(counter.get() + 1)),
+    <name:Ident> => Type::struct_(name),
+    "@" <name:Ident> => Type::interface(name),
+    "(" <tys:Comma<Type>> ")" => Type::tuple(tys),
+    "fn" <sig:FnSig> => sig,    
+};
+
+FnSig: Type = {
+    "(" <inputs:Comma<Type>> ")" "->" <output:Type> => Type::func(inputs, output)
+}
+
+Ident: Symbol = r"[a-zA-Z_][a-zA-Z0-9_]*" => Symbol::new(<>);
+Float: f32 = r"-?[0-9]+\.[0-9]*" => <>.parse().unwrap();
+Num: i32 = r"-?[0-9]+" => <>.parse().unwrap();
+Bool: bool = {
+    "true" => true,
+    "false" => false,
+};
+String: String = r#""[^"]*""# => <>.trim_matches('"').to_string();
+
+match {
+    r"\s*" => { }, // The default whitespace skipping is disabled if an `ignore pattern` is specified
+    r"//[^\n\r]*[\n\r]*" => { }, // Skip `// comments`
+    _
+}

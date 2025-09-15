@@ -1,0 +1,8 @@
+fn hello(object: string) {
+  println("Bonjour " ^ object)
+}
+
+fn main() {
+  let f = hello in
+  f("le monde")  
+}

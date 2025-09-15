@@ -1,0 +1,7 @@
+interface Bar {
+  fn bloop(Self, int) -> int;
+}
+
+fn main() { 
+  (1).bloop(0); ()
+}

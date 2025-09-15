@@ -1,0 +1,6 @@
+fn main() {
+  let a = 1 in
+  let b = 2 in
+  let n = (\(c: int) -> int. a + b + c + (\(a: int) -> int. a + b + c)(4))(3) in
+  println(int_to_string(n))
+}

@@ -1,0 +1,16 @@
+---
+source: tests/snapshots.rs
+expression: output
+---
+success = false
+stdout = ''
+stderr = '''
+Error:   × impl block refers to unknown interface `Bar`
+   ╭─[impl_bad_intf.rice:3:6]
+ 2 │ 
+ 3 │ impl Bar for Foo {}
+   ·      ───
+ 4 │ 
+   ╰────
+
+'''

@@ -1,0 +1,11 @@
+interface Bar {
+  fn bloop(Self, int) -> int;
+}
+
+struct Foo(int);
+
+impl Bar for Foo {
+  fn bloop(self: Self, s: string) -> int { 0 }
+}
+
+fn main() { () }

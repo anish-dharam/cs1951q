@@ -1,0 +1,17 @@
+---
+source: tests/snapshots.rs
+expression: output
+---
+success = false
+stdout = ''
+stderr = '''
+Error:   × type mismatch
+   ╭─[impl_bad_method_param.rice:8:6]
+ 7 │ impl Bar for Foo {
+ 8 │   fn bloop(self: Self, s: string) -> int { 0 }
+   ·      ──┬──
+   ·        ╰── expected `int`, found `string`
+ 9 │ }
+   ╰────
+
+'''

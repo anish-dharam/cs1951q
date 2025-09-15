@@ -1,0 +1,4 @@
+fn main() {
+  let x = "" in
+  1 + x; ()
+}
