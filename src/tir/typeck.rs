@@ -849,7 +849,7 @@ impl Tcx {
 
             ast::ExprKind::Break => {
                 ensure!(
-                    self.num_loops == 0,
+                    self.num_loops > 0,
                     TypeError::InvalidBreak { span: expr.span }
                 );
                 (tir::ExprKind::Break, Type::unit())

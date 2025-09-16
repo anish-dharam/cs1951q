@@ -3,7 +3,7 @@ fn main() {
     println("Hello");
     break;
     break;
-    println("World")
-    break;
+    println("World");
+    break
   }
 }
