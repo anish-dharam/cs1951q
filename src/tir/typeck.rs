@@ -130,7 +130,7 @@ pub enum TypeError {
         span: Span,
     },
 
-    #[error("break not used in a loop")]
+    #[error("break used outside of a loop")]
     InvalidBreak {
         #[label]
         span: Span,
