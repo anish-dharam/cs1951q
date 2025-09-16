@@ -115,6 +115,7 @@ struct LowerBody<'a> {
     cur_block: Vec<bc::Statement>,
     start_block: bc::BasicBlockIdx,
     cur_loc: bc::BasicBlockIdx,
+    loop_stack: Vec<bc::BasicBlockIdx>,
 }
 
 /// A destination for writing the result of a computation.
@@ -154,6 +155,7 @@ impl<'a> LowerBody<'a> {
             cur_block: Vec::new(),
             cur_loc: start_block,
             start_block,
+            loop_stack: Vec::new(),
         };
 
         for (name, ty) in &func.params {
@@ -322,7 +324,9 @@ impl<'a> LowerBody<'a> {
                     },
                 );
 
+                self.loop_stack.push(footer_block);
                 self.lower_expr_into(body, op);
+                let _ = self.loop_stack.pop();
 
                 self.finish_block(
                     footer_block,
@@ -459,6 +463,21 @@ impl<'a> LowerBody<'a> {
 
             tir::ExprKind::Lambda { .. } => {
                 unreachable!("lambdas should be eliminated by closure conversion")
+            }
+
+            tir::ExprKind::Break => {
+                let target = *self
+                    .loop_stack
+                    .last()
+                    .expect("break should only appear inside a loop after typechecking");
+                let exit_block = self.new_block();
+                self.finish_block(
+                    exit_block,
+                    bc::Terminator {
+                        kind: bc::TerminatorKind::Jump(target),
+                        span: expr.span,
+                    },
+                );
             }
         }
     }

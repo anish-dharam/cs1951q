@@ -115,6 +115,7 @@ pub trait VisitMut {
                 self.visit_texpr(&mut *dst);
                 self.visit_texpr(&mut *src);
             }
+            ExprKind::Break => {}
         }
     }
 

@@ -94,6 +94,7 @@ pub enum ExprKind {
         dst: Box<Expr>,
         src: Box<Expr>,
     },
+    Break,
 }
 
 #[derive(Debug, Clone)]

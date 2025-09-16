@@ -129,6 +129,12 @@ pub enum TypeError {
         #[label]
         span: Span,
     },
+
+    #[error("break not used in a loop")]
+    InvalidBreak {
+        #[label]
+        span: Span,
+    },
 }
 
 pub struct TypeData {
@@ -157,6 +163,7 @@ pub struct Globals {
 /// Type context contains info accumulated while type-checking, such as [`Globals`].
 pub struct Tcx {
     globals: Globals,
+    num_loops: u32,
 }
 
 /// A predicate which must hold on a concrete type, excluding equality.
@@ -213,6 +220,7 @@ impl Tcx {
     pub fn new() -> Self {
         let mut tcx = Tcx {
             globals: Globals::default(),
+            num_loops: 0,
         };
 
         // Load stdlib into the type context
@@ -762,14 +770,18 @@ impl Tcx {
             }
 
             ast::ExprKind::Loop(body) => {
+                self.num_loops += 1;
                 let body = self.check_expr(body)?;
+                self.num_loops -= 1;
                 (tir::ExprKind::Loop(Box::new(body)), Type::unit())
             }
 
             ast::ExprKind::While { cond, body } => {
                 let cond = self.check_expr(cond)?;
                 self.ty_equiv(Type::bool(), cond.ty, cond.span)?;
+                self.num_loops += 1;
                 let body = self.check_expr(body)?;
+                self.num_loops -= 1;
                 (
                     tir::ExprKind::While {
                         cond: Box::new(cond),
@@ -833,6 +845,14 @@ impl Tcx {
                     },
                     Type::unit(),
                 )
+            }
+
+            ast::ExprKind::Break => {
+                ensure!(
+                    self.num_loops == 0,
+                    TypeError::InvalidBreak { span: expr.span }
+                );
+                (tir::ExprKind::Break, Type::unit())
             }
         };
         Ok(Expr {

@@ -122,6 +122,7 @@ impl fmt::Display for ExprKind {
                 write!(f, "while {} {{\n{}\n}}", cond, indent(format!("{body}")))
             }
             ExprKind::Assign { dst, src } => write!(f, "{} = {}", dst, src),
+            ExprKind::Break => write!(f, "break"),
         }
     }
 }

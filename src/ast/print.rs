@@ -157,6 +157,7 @@ impl fmt::Display for ExprKind {
                 write!(f, "while {} {{\n{}\n}}", cond, indent(format!("{}", body)))
             }
             ExprKind::Return(e) => write!(f, "return {}", e),
+            ExprKind::Break => write!(f, "break"),
         }
     }
 }

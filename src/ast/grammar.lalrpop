@@ -161,6 +161,8 @@ StmtExpr: ExprKind = {
     "while" <cond:Spanned<Expr>> <body:Spanned<BlockExpr>> => ExprKind::While { cond: Box::new(cond), body: Box::new(body) },
 
     "return" <expr:Spanned<StmtExpr>> => ExprKind::Return(Box::new(expr)),    
+
+    "break" => ExprKind::Break,
 }
 
 pub Expr: ExprKind = {

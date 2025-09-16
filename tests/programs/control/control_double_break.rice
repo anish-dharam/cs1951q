@@ -1,0 +1,9 @@
+fn main() {
+  loop {
+    println("Hello");
+    break;
+    break;
+    println("World")
+    break;
+  }
+}
