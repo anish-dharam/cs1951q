@@ -1,0 +1,7 @@
+fn main() {
+  let x = 5 in
+  while x > 0 {
+    println(int_to_string(x));
+    x := x - 1
+  }
+}

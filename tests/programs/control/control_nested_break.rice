@@ -1,0 +1,12 @@
+fn main() {
+  loop {
+    loop {
+      println("Hello");
+      break;
+      println("World")
+    };
+    println("World");
+    break;
+    println("Oops")
+  }
+}

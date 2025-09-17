@@ -14,10 +14,35 @@ impl VisitMut for Desugarer {
 
         // Then desugar this expression
         match &mut expr.kind {
-            #[allow(unused)]
+            // #[allow(unused)]
             ExprKind::While { cond, body } => {
                 // Desugar while loop to: loop { if cond { body } else { break } }
-                todo!("finish once break statements are implemented");
+                let cond_expr = Expr {
+                    kind: cond.kind.clone(),
+                    ty: cond.ty,
+                    span: cond.span,
+                };
+                let then_expr = Expr {
+                    kind: body.kind.clone(),
+                    ty: body.ty,
+                    span: body.span,
+                };
+                let else_expr = Expr {
+                    kind: ExprKind::Break,
+                    ty: Type::unit(),
+                    span: expr.span,
+                };
+                let loop_expr = Expr {
+                    ty: expr.ty,
+                    span: expr.span,
+                    kind: ExprKind::If {
+                        cond: Box::new(cond_expr),
+                        then_: Box::new(then_expr),
+                        else_: Some(Box::new(else_expr)),
+                    },
+                };
+
+                expr.kind = ExprKind::Loop(Box::new(loop_expr))
             }
             ExprKind::If { else_, .. } => {
                 // Desugar if-without-else to if-else with unit else branch

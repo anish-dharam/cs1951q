@@ -1,0 +1,8 @@
+fn main() {
+  let x = 5 in
+  loop {
+    println(int_to_string(x));
+    x := x - 1;
+    if x == 0 {break} else {()}
+  }
+}
