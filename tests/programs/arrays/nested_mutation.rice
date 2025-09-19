@@ -1,0 +1,8 @@
+fn main() {
+  let a: [int] = [1, 2] in
+  let b: [int] = [3, 4] in
+  let c: [[int]] = [a, b] in
+  c[0][0] := 0;
+  println(int_to_string(a[0]))
+  println(int_to_string(c[0][0]))
+}

@@ -1,0 +1,4 @@
+fn main() {
+  let a: [int] = [1, 2] in
+  println(int_to_string(a[2]))
+}

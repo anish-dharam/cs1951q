@@ -1,0 +1,4 @@
+fn main() {
+  let a: [string] = [] in
+  println("hello")
+}

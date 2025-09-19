@@ -1,0 +1,10 @@
+fn main() {
+  let a: [int] = [1, 2] in
+  let b: [int] = [|a; 4|] in
+  println(int_to_string(b[0][0]));
+  b[0][0] := 3;
+  a[1] := 4;
+  println(int_to_string(b[3][1]));
+  println(int_to_string(b[1][0]));
+  println(int_to_string(a[0]))
+}
