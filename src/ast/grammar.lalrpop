@@ -93,6 +93,13 @@ AtomicExpr: ExprKind = {
         exprs.insert(0, e1);
         ExprKind::Tuple(exprs)
     },
+    "[" "]" => ExprKind::ArrayLiteral(Vec::new()),
+    "[" <e1:Spanned<Expr>> "," <mut exprs:Comma<Spanned<Expr>>> "]" => {
+        exprs.insert(0, e1);
+        ExprKind::ArrayLiteral(exprs)
+    },
+    "[|" <e:Spanned<AtomicExpr>> ";" <count:Spanned<AtomicExpr>> "|]" => 
+        ExprKind::ArrayCopy { value: Box::new(e), count: Box::new(count) },
     "(" <e:Expr> ")" => e,
 }
 
@@ -121,7 +128,10 @@ AppExpr: ExprKind = {
         }
 
         ExprKind::Call { f: Box::new(f), args }
-    },    
+    },
+
+    <e:Spanned<AppExpr>> "[" <idx:Spanned<Expr>> "]" => 
+        ExprKind::ArrayIndex { array: Box::new(e), index: Box::new(idx) },
 }
 
 InfixExpr: ExprKind = {
@@ -230,6 +240,7 @@ Type: Type = {
     "@" <name:Ident> => Type::interface(name),
     "(" <tys:Comma<Type>> ")" => Type::tuple(tys),
     "fn" <sig:FnSig> => sig,    
+    "[" <ty:Type> "]" => Type::array(ty),
 };
 
 FnSig: Type = {

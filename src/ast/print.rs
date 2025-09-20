@@ -158,6 +158,17 @@ impl fmt::Display for ExprKind {
             }
             ExprKind::Return(e) => write!(f, "return {}", e),
             ExprKind::Break => write!(f, "break"),
+            ExprKind::ArrayLiteral(exprs) => {
+                write!(f, "[")?;
+                write_comma_separated(f, exprs)?;
+                write!(f, "]")
+            }
+            ExprKind::ArrayIndex { array, index } => {
+                write!(f, "{}[{}]", array, index)
+            }
+            ExprKind::ArrayCopy { value, count } => {
+                write!(f, "[|{}; {}|]", value, count)
+            }
         }
     }
 }
@@ -221,6 +232,7 @@ impl fmt::Display for TypeKind {
                 write!(f, ") -> {}", output)
             }
             TypeKind::Hole(n) => write!(f, "?{n}"),
+            TypeKind::Array(ty) => write!(f, "[{ty}]"),
         }
     }
 }

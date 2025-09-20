@@ -20,6 +20,7 @@ pub enum TypeKind {
     Struct(Symbol),
     Interface(Symbol),
     Hole(usize),
+    Array(Type),
 }
 
 interned!(Type, TypeKind);
@@ -77,6 +78,10 @@ impl Type {
         self.0.as_ref()
     }
 
+    pub fn array(ty: Type) -> Self {
+        Type(Intern::new(TypeKind::Array(ty)))
+    }
+
     /// Substitute holes for types by running a function `f` on each hole.
     pub fn subst(self, f: &mut impl FnMut(usize) -> Type) -> Type {
         match self.kind() {
@@ -92,6 +97,8 @@ impl Type {
                 inputs.iter().map(|ty| ty.subst(f)).collect(),
                 output.subst(f),
             ),
+
+            TypeKind::Array(ty) => Type::array(ty.subst(f)),
             TypeKind::Hole(hole) => f(*hole),
         }
     }
@@ -135,6 +142,8 @@ impl TypeKind {
                     && inputs1.iter().zip(inputs2).all(|(t1, t2)| t1.equiv(t2))
                     && output1.equiv(output2)
             }
+            (TypeKind::Array(t1), TypeKind::Array(t2)) => t1.equiv(t2),
+
             _ => false,
         }
     }
@@ -314,6 +323,15 @@ pub enum ExprKind {
         src: Box<Expr>,
     },
     Break,
+    ArrayLiteral(Vec<Expr>),
+    ArrayIndex {
+        array: Box<Expr>,
+        index: Box<Expr>,
+    },
+    ArrayCopy {
+        value: Box<Expr>,
+        count: Box<Expr>,
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize)]

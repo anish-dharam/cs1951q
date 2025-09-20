@@ -123,6 +123,14 @@ impl fmt::Display for ExprKind {
             }
             ExprKind::Assign { dst, src } => write!(f, "{} = {}", dst, src),
             ExprKind::Break => write!(f, "break"),
+            ExprKind::ArrayLiteral(exprs) => {
+                write!(f, "[")?;
+                write_comma_separated(f, exprs)?;
+                write!(f, "]")
+            }
+            ExprKind::ArrayCopy { value, count } => {
+                write!(f, "[|{}; {}|]", value, count)
+            }
         }
     }
 }

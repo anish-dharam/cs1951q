@@ -116,6 +116,15 @@ pub trait VisitMut {
                 self.visit_texpr(&mut *src);
             }
             ExprKind::Break => {}
+            ExprKind::ArrayLiteral(exprs) => {
+                for e in exprs {
+                    self.visit_texpr(e);
+                }
+            }
+            ExprKind::ArrayCopy { value, count } => {
+                self.visit_texpr(&mut *value);
+                self.visit_texpr(&mut *count);
+            }
         }
     }
 

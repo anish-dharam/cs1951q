@@ -135,6 +135,26 @@ pub enum TypeError {
         #[label]
         span: Span,
     },
+
+    #[error("can't construct empty array")]
+    EmptyArray {
+        #[label]
+        span: Span,
+    },
+
+    #[error("all elements in array must have type {first_type}")]
+    NonHomogenousArray {
+        #[label]
+        span: Span,
+        first_type: Type,
+    },
+
+    #[error("tried to index into a {ty} as if it were an array")]
+    IndexIntoNonArray {
+        #[label]
+        span: Span,
+        ty: Type,
+    },
 }
 
 pub struct TypeData {
@@ -446,9 +466,7 @@ impl Tcx {
                 );
                 (tir::ExprKind::Var(new_name), ty)
             }
-
             ast::ExprKind::Const(c) => (tir::ExprKind::Const(c.clone()), c.ty()),
-
             ast::ExprKind::New { name, args } => {
                 ensure_let!(
                     Some(params) = self.globals.structs.get(name),
@@ -470,7 +488,6 @@ impl Tcx {
                     .collect::<Result<Vec<_>>>()?;
                 (tir::ExprKind::Struct(args), Type::struct_(*name))
             }
-
             ast::ExprKind::Binop { left, op, right } => {
                 let left = self.check_expr(left)?;
                 let right = self.check_expr(right)?;
@@ -514,7 +531,6 @@ impl Tcx {
                     out_ty,
                 )
             }
-
             ast::ExprKind::Cast { e, ty } => {
                 let e = self.check_expr(e)?;
                 self.ty_constraint(TypeConstraint::CastableTo(*ty), e.ty, expr.span)?;
@@ -526,7 +542,6 @@ impl Tcx {
                     *ty,
                 )
             }
-
             ast::ExprKind::Tuple(es) => {
                 let es = es
                     .iter()
@@ -535,7 +550,6 @@ impl Tcx {
                 let tys = es.iter().map(|e| e.ty).collect::<Vec<_>>();
                 (tir::ExprKind::Tuple(es), Type::tuple(tys))
             }
-
             ast::ExprKind::Project { e, i } => {
                 let e = self.check_expr(e)?;
                 let tys = match e.ty.kind() {
@@ -572,7 +586,6 @@ impl Tcx {
                     *ith_ty,
                 )
             }
-
             ast::ExprKind::Call { f, args } => {
                 let f = self.check_expr(f)?;
                 ensure_let!(
@@ -611,7 +624,6 @@ impl Tcx {
                     *output,
                 )
             }
-
             ast::ExprKind::MethodCall {
                 receiver,
                 method,
@@ -703,14 +715,12 @@ impl Tcx {
                     sig.output(),
                 )
             }
-
             ast::ExprKind::Seq(e1, e2) => {
                 let e1 = self.check_expr(e1)?;
                 let e2 = self.check_expr(e2)?;
                 let e2_ty = e2.ty;
                 (tir::ExprKind::Seq(Box::new(e1), Box::new(e2)), e2_ty)
             }
-
             ast::ExprKind::Let { name, ty, e1, e2 } => {
                 let e1 = self.check_expr(e1)?;
                 let inferred_ty = match ty {
@@ -734,12 +744,10 @@ impl Tcx {
                     e2_ty,
                 )
             }
-
             ast::ExprKind::Return(e) => {
                 let e = self.check_expr(e)?;
                 (tir::ExprKind::Return(Box::new(e)), Type::unit())
             }
-
             ast::ExprKind::If { cond, then_, else_ } => {
                 let cond_span = cond.span;
                 let cond = self.check_expr(cond)?;
@@ -768,14 +776,12 @@ impl Tcx {
                     ty,
                 )
             }
-
             ast::ExprKind::Loop(body) => {
                 self.num_loops += 1;
                 let body = self.check_expr(body)?;
                 self.num_loops -= 1;
                 (tir::ExprKind::Loop(Box::new(body)), Type::unit())
             }
-
             ast::ExprKind::While { cond, body } => {
                 let cond = self.check_expr(cond)?;
                 self.ty_equiv(Type::bool(), cond.ty, cond.span)?;
@@ -790,7 +796,6 @@ impl Tcx {
                     Type::unit(),
                 )
             }
-
             ast::ExprKind::Lambda {
                 params,
                 ret_ty,
@@ -832,7 +837,6 @@ impl Tcx {
                     func_ty,
                 )
             }
-
             ast::ExprKind::Assign { dst, src } => {
                 let src = self.check_expr(src)?;
                 let dst = self.check_expr(dst)?;
@@ -846,13 +850,72 @@ impl Tcx {
                     Type::unit(),
                 )
             }
-
             ast::ExprKind::Break => {
                 ensure!(
                     self.num_loops > 0,
                     TypeError::InvalidBreak { span: expr.span }
                 );
                 (tir::ExprKind::Break, Type::unit())
+            }
+            ast::ExprKind::ArrayLiteral(exprs) => {
+                ensure!(
+                    !exprs.is_empty(),
+                    TypeError::EmptyArray {
+                        span: Span { start: 0, end: 0 }
+                    }
+                );
+
+                let exprs = exprs
+                    .iter()
+                    .map(|e| self.check_expr(e))
+                    .collect::<Result<Vec<_>>>()?;
+
+                let tys = exprs.iter().map(|e| e.ty).collect::<Vec<_>>();
+
+                let all_same = tys
+                    .first()
+                    .map(|first| tys.iter().all(|x| x.equiv(first)))
+                    .unwrap_or(true);
+
+                let internal_type = *tys.first().unwrap();
+                ensure!(
+                    all_same,
+                    TypeError::NonHomogenousArray {
+                        span: exprs.first().unwrap().span,
+                        first_type: internal_type
+                    }
+                );
+
+                (
+                    tir::ExprKind::ArrayLiteral(exprs),
+                    Type::array(internal_type),
+                )
+            }
+            ast::ExprKind::ArrayIndex { array, index } => {
+                let array = self.check_expr(array)?;
+                let internal_type = match array.ty.kind() {
+                    TypeKind::Array(ty) => ty,
+                    _ => bail!(TypeError::IndexIntoNonArray {
+                        span: array.span,
+                        ty: array.ty
+                    }),
+                };
+                let index = self.check_expr(index)?;
+                self.ty_equiv(Type::int(), index.ty, index.span)?;
+                (array.kind, *internal_type)
+            }
+            ast::ExprKind::ArrayCopy { value, count } => {
+                let value = self.check_expr(value)?;
+                let internal_type = value.ty;
+                let count = self.check_expr(count)?;
+                self.ty_equiv(Type::int(), count.ty, count.span);
+                (
+                    tir::ExprKind::ArrayCopy {
+                        value: Box::new(value),
+                        count: Box::new(count),
+                    },
+                    Type::array(internal_type),
+                )
             }
         };
         Ok(Expr {
