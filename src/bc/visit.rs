@@ -92,6 +92,10 @@ pub trait Visit {
                         self.visit_operand(op, loc);
                     }
                 }
+                AllocArgs::ArrayCopy { value, count } => {
+                    self.visit_operand(value, loc);
+                    self.visit_operand(count, loc);
+                }
             },
             Rvalue::Binop { left, right, .. } => {
                 self.visit_operand(left, loc);
@@ -208,6 +212,10 @@ pub trait VisitMut {
             .iter()
             .map(|elem| match elem.clone() {
                 ProjectionElem::Field { index, ty } => ProjectionElem::Field { index, ty },
+                ProjectionElem::ArrayIndex { index, ty } => ProjectionElem::ArrayIndex {
+                    index: index,
+                    ty: ty,
+                },
             })
             .collect_vec();
         if place.projection != new_projection {
@@ -237,6 +245,10 @@ pub trait VisitMut {
                     for op in args {
                         self.visit_operand(op, loc);
                     }
+                }
+                AllocArgs::ArrayCopy { value, count } => {
+                    self.visit_operand(value, loc);
+                    self.visit_operand(count, loc);
                 }
             },
             Rvalue::Binop { left, right, .. } => {

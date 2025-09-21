@@ -253,7 +253,6 @@ impl<'a> LowerBody<'a> {
 
         match &expr.kind {
             tir::ExprKind::Const(c) => add_operand!(bc::Operand::Const(c.clone())),
-
             tir::ExprKind::BinOp { left, right, op } => {
                 let left_place = self.lower_expr_into_tmp(left);
                 let right_place = self.lower_expr_into_tmp(right);
@@ -263,12 +262,10 @@ impl<'a> LowerBody<'a> {
                     right: right_place,
                 });
             }
-
             tir::ExprKind::Cast { e, ty } => {
                 let e_op = self.lower_expr_into_tmp(e);
                 add_assign!(bc::Rvalue::Cast { op: e_op, ty: *ty })
             }
-
             tir::ExprKind::If { cond, then_, else_ } => {
                 let then_block = self.new_block();
                 let else_block = self.new_block();
@@ -311,7 +308,6 @@ impl<'a> LowerBody<'a> {
                     },
                 );
             }
-
             tir::ExprKind::Loop(body) => {
                 let header_block = self.new_block();
                 let footer_block = self.new_block();
@@ -342,7 +338,6 @@ impl<'a> LowerBody<'a> {
                     args: AllocArgs::Lit(Vec::new())
                 });
             }
-
             tir::ExprKind::Let { name, ty, e1, e2 } => {
                 let local = self.get_local(*name, *ty);
                 let let_op = bc::Place::new(local, vec![], *ty);
@@ -350,12 +345,10 @@ impl<'a> LowerBody<'a> {
 
                 self.lower_expr_into(e2, op);
             }
-
             tir::ExprKind::Var(name) => {
                 let local = self.get_local(*name, expr.ty);
                 add_operand!(bc::Operand::Place(bc::Place::new(local, vec![], expr.ty)))
             }
-
             tir::ExprKind::Tuple(els) => {
                 let els = els
                     .iter()
@@ -367,7 +360,6 @@ impl<'a> LowerBody<'a> {
                     args: AllocArgs::Lit(els)
                 });
             }
-
             tir::ExprKind::Struct(els) => {
                 let els = els
                     .iter()
@@ -379,7 +371,6 @@ impl<'a> LowerBody<'a> {
                     args: AllocArgs::Lit(els)
                 });
             }
-
             tir::ExprKind::Project { e, i } => {
                 let place = self.gensym(e.ty);
                 self.lower_expr_into(e, WriteDst::Place(place));
@@ -393,7 +384,6 @@ impl<'a> LowerBody<'a> {
                 );
                 add_assign!(bc::Rvalue::Operand(bc::Operand::Place(projected)))
             }
-
             tir::ExprKind::Call { f, args } => {
                 let f_place = self.lower_expr_into_tmp(f);
                 let args = args
@@ -402,7 +392,6 @@ impl<'a> LowerBody<'a> {
                     .collect::<Vec<_>>();
                 add_assign!(bc::Rvalue::Call { f: f_place, args });
             }
-
             tir::ExprKind::MethodCall {
                 receiver,
                 method,
@@ -423,17 +412,14 @@ impl<'a> LowerBody<'a> {
                     args
                 })
             }
-
             tir::ExprKind::Closure { f, env } => {
                 let env = env.iter().map(|e| self.lower_expr_into_tmp(e)).collect();
                 add_assign!(bc::Rvalue::Closure { f: *f, env })
             }
-
             tir::ExprKind::Seq(e1, e2) => {
                 self.lower_expr_into_tmp(e1);
                 self.lower_expr_into(e2, op);
             }
-
             tir::ExprKind::Return(e) => {
                 let ret_op = self.lower_expr_into_tmp(e);
 
@@ -446,7 +432,6 @@ impl<'a> LowerBody<'a> {
                     },
                 );
             }
-
             tir::ExprKind::Assign { dst, src } => {
                 let place = self.lower_place(dst);
                 self.lower_expr_into(src, WriteDst::Place(place));
@@ -456,15 +441,12 @@ impl<'a> LowerBody<'a> {
                     args: AllocArgs::Lit(Vec::new())
                 })
             }
-
             tir::ExprKind::While { .. } => {
                 unreachable!("while loops should be desugared away before bytecode lowering")
             }
-
             tir::ExprKind::Lambda { .. } => {
                 unreachable!("lambdas should be eliminated by closure conversion")
             }
-
             tir::ExprKind::Break => {
                 let target = *self
                     .loop_stack
@@ -479,6 +461,51 @@ impl<'a> LowerBody<'a> {
                     },
                 );
             }
+            tir::ExprKind::ArrayLiteral(exprs) => {
+                let elems = exprs
+                    .iter()
+                    .map(|e| self.lower_expr_into_tmp(e))
+                    .collect::<Vec<_>>();
+                add_assign!(bc::Rvalue::Alloc {
+                    kind: AllocKind::Array,
+                    loc: AllocLoc::Heap,
+                    args: AllocArgs::Lit(elems)
+                });
+            }
+            tir::ExprKind::ArrayIndex { array, index } => {
+                let arr_place = self.gensym(array.ty);
+                self.lower_expr_into(array, WriteDst::Place(arr_place));
+                assert!(index.ty.equiv(&tir::TypeKind::Int));
+                let idx_place = self.gensym(index.ty);
+                self.lower_expr_into(index, WriteDst::Place(idx_place));
+
+                let projected = arr_place.extend_projection(
+                    [ProjectionElem::ArrayIndex {
+                        index: bc::Operand::Place(idx_place),
+                        ty: array.ty,
+                    }],
+                    expr.ty,
+                );
+
+                add_assign!(bc::Rvalue::Operand(bc::Operand::Place(projected)))
+            }
+            tir::ExprKind::ArrayCopy { value, count } => {
+                let val_place = self.gensym(value.ty);
+                self.lower_expr_into(value, WriteDst::Place(val_place));
+
+                assert!(count.ty.equiv(&tir::TypeKind::Int));
+                let count_place = self.gensym(count.ty);
+                self.lower_expr_into(count, WriteDst::Place(count_place));
+
+                add_assign!(bc::Rvalue::Alloc {
+                    kind: AllocKind::Array,
+                    loc: AllocLoc::Heap,
+                    args: AllocArgs::ArrayCopy {
+                        value: bc::Operand::Place(val_place),
+                        count: bc::Operand::Place(count_place)
+                    }
+                });
+            }
         }
     }
 
@@ -491,6 +518,13 @@ impl<'a> LowerBody<'a> {
                     ty: e.ty,
                 });
                 self.lower_place_impl(e, proj)
+            }
+            tir::ExprKind::ArrayIndex { array, index } => {
+                proj.push(bc::ProjectionElem::ArrayIndex {
+                    index: self.lower_expr_into_tmp(index),
+                    ty: array.ty,
+                });
+                self.lower_place_impl(array, proj)
             }
             _ => panic!("invalid place: {e:?}"),
         }

@@ -128,6 +128,9 @@ impl fmt::Display for ExprKind {
                 write_comma_separated(f, exprs)?;
                 write!(f, "]")
             }
+            ExprKind::ArrayIndex { array, index } => {
+                write!(f, "{}[{}]", array, index)
+            }
             ExprKind::ArrayCopy { value, count } => {
                 write!(f, "[|{}; {}|]", value, count)
             }

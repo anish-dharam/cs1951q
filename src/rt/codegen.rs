@@ -67,6 +67,7 @@ pub fn codegen<'a>(
         func_name_to_code_idx: HashMap::new(),
         types: TypeSection::new(),
         struct_ty_idx: HashMap::new(),
+        array_ty_idx: HashMap::new(),
         data: DataSection::new(),
         data_offset: 0,
         func_refs: Vec::new(),
@@ -119,6 +120,7 @@ struct CodegenModule<'a> {
     func_name_to_code_idx: HashMap<Symbol, u32>,
     types: TypeSection,
     struct_ty_idx: HashMap<StructType, u32>,
+    array_ty_idx: HashMap<ValType, u32>,
     data: DataSection,
     data_offset: u32,
     func_refs: Vec<u32>,
@@ -251,6 +253,19 @@ impl CodegenModule<'_> {
         }
     }
 
+    fn array_ty_idx(&mut self, element_ty: ValType) -> u32 {
+        match self.array_ty_idx.get(&element_ty) {
+            Some(idx) => *idx,
+            None => {
+                let storage_ty = StorageType::Val(element_ty);
+                self.types.ty().array(&storage_ty, false);
+                let idx = self.types.len() - 1;
+                self.array_ty_idx.insert(element_ty, idx);
+                idx
+            }
+        }
+    }
+
     fn interface_ty_idx(&mut self, intf: Symbol) -> u32 {
         let methods = &self.tcx.globals().intfs[&intf];
         let fields = methods
@@ -352,6 +367,14 @@ impl CodegenModule<'_> {
                     nullable: true,
                 })
             }
+            bc::TypeKind::Array(element_ty) => {
+                let element_val_ty = self.gen_ty(*element_ty);
+                let idx = self.array_ty_idx(element_val_ty);
+                ValType::Ref(RefType {
+                    heap_type: HeapType::Concrete(idx),
+                    nullable: true,
+                })
+            }
             bc::TypeKind::Self_ => REFSTRUCT,
             bc::TypeKind::Hole(_) => unreachable!(),
         }
@@ -415,6 +438,12 @@ impl CodegenFunc<'_, '_> {
                     bc::ProjectionElem::Field { index, ty } => {
                         instrs.struct_get(self.module.tuple_ty_idx(*ty), *index as u32);
                     }
+                    bc::ProjectionElem::ArrayIndex { index, ty } => {
+                        self.gen_operand(index, instrs);
+                        let element_ty = self.module.gen_ty(*ty);
+                        let array_ty_idx = self.module.array_ty_idx(element_ty);
+                        instrs.array_get(array_ty_idx);
+                    }
                 }
             }
 
@@ -422,6 +451,13 @@ impl CodegenFunc<'_, '_> {
                 bc::ProjectionElem::Field { index, ty } => {
                     self.gen_rvalue(&stmt.rvalue, stmt.place.ty, instrs);
                     instrs.struct_set(self.module.tuple_ty_idx(*ty), *index as u32);
+                }
+                bc::ProjectionElem::ArrayIndex { index, ty } => {
+                    self.gen_operand(index, instrs);
+                    self.gen_rvalue(&stmt.rvalue, stmt.place.ty, instrs);
+                    let element_ty = self.module.gen_ty(*ty);
+                    let array_ty_idx = self.module.array_ty_idx(element_ty);
+                    instrs.array_set(array_ty_idx);
                 }
             }
         }
@@ -542,8 +578,26 @@ impl CodegenFunc<'_, '_> {
                                 let ty_idx = self.module.struct_ty_idx(ty);
                                 instrs.struct_new(ty_idx);
                             }
+                            bc::AllocKind::Array => {
+                                let bc::TypeKind::Array(element_ty) = ty.kind() else {
+                                    panic!("{ty:?} is not an array")
+                                };
+                                let element_val_ty = self.module.gen_ty(*element_ty);
+                                let ty_idx = self.module.array_ty_idx(element_val_ty);
+                                instrs.array_new_fixed(ty_idx, ops.len() as u32);
+                            }
                         },
                     }
+                }
+                bc::AllocArgs::ArrayCopy { value, count } => {
+                    self.gen_operand(value, instrs);
+                    self.gen_operand(count, instrs);
+                    let bc::TypeKind::Array(element_ty) = ty.kind() else {
+                        panic!("{ty:?} is not an array")
+                    };
+                    let element_val_ty = self.module.gen_ty(*element_ty);
+                    let ty_idx = self.module.array_ty_idx(element_val_ty);
+                    instrs.array_new(ty_idx);
                 }
             },
 
@@ -608,6 +662,12 @@ impl CodegenFunc<'_, '_> {
             match elem {
                 bc::ProjectionElem::Field { index, ty } => {
                     instrs.struct_get(self.module.tuple_ty_idx(*ty), *index as u32);
+                }
+                bc::ProjectionElem::ArrayIndex { index, ty } => {
+                    self.gen_operand(index, instrs);
+                    let element_ty = self.module.gen_ty(*ty);
+                    let array_ty_idx = self.module.array_ty_idx(element_ty);
+                    instrs.array_get(array_ty_idx);
                 }
             }
         }

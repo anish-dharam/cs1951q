@@ -89,6 +89,7 @@ impl fmt::Display for Rvalue {
                 write!(f, "alloc[{kind} @ {loc}](")?;
                 match args {
                     AllocArgs::Lit(args) => write_comma_separated(f, args)?,
+                    AllocArgs::ArrayCopy { value, count } => write!(f, "[{value}; {count}]")?,
                 };
                 write!(f, ")")
             }
@@ -144,6 +145,7 @@ impl fmt::Display for Place {
         for proj in &self.projection {
             match proj {
                 ProjectionElem::Field { index, .. } => write!(f, ".{}", index)?,
+                ProjectionElem::ArrayIndex { index, .. } => write!(f, "[{index}]")?,
             }
         }
         Ok(())

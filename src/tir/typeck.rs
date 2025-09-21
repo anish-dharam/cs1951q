@@ -902,7 +902,13 @@ impl Tcx {
                 };
                 let index = self.check_expr(index)?;
                 self.ty_equiv(Type::int(), index.ty, index.span)?;
-                (array.kind, *internal_type)
+                (
+                    tir::ExprKind::ArrayIndex {
+                        array: Box::new(array),
+                        index: Box::new(index),
+                    },
+                    *internal_type,
+                )
             }
             ast::ExprKind::ArrayCopy { value, count } => {
                 let value = self.check_expr(value)?;

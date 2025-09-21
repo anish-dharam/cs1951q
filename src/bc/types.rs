@@ -339,6 +339,7 @@ impl Operand {
 pub enum AllocKind {
     Struct,
     Tuple,
+    Array,
 }
 
 /// The location in memory of an object allocated by an [`Rvalue::Alloc`] instruction.
@@ -354,6 +355,8 @@ pub enum AllocLoc {
 pub enum AllocArgs {
     /// A fixed-size literal, e.g. `(x, y)` or `[x, y]`.
     Lit(Vec<Operand>),
+    /// array copy
+    ArrayCopy { value: Operand, count: Operand },
 }
 
 /// An expression that is assigned to a [`Place`] in a [`Statement`].
@@ -405,6 +408,11 @@ impl Rvalue {
             Rvalue::Operand(op) | Rvalue::Cast { op, .. } => op.as_place().into_iter().collect(),
             Rvalue::Alloc { args, .. } => match args {
                 AllocArgs::Lit(ops) => ops.iter().flat_map(|op| op.as_place()).collect(),
+                AllocArgs::ArrayCopy { value, count } => value
+                    .as_place()
+                    .into_iter()
+                    .chain(count.as_place())
+                    .collect(),
             },
             Rvalue::Call { args: ops, .. } | Rvalue::Closure { env: ops, .. } => {
                 ops.iter().filter_map(|op| op.as_place()).collect()
@@ -510,4 +518,6 @@ impl Place {
 pub enum ProjectionElem {
     /// Get the field of a fixed-sized structure.
     Field { index: usize, ty: Type },
+    ///Index into an array
+    ArrayIndex { index: Operand, ty: Type },
 }

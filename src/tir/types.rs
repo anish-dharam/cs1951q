@@ -96,6 +96,10 @@ pub enum ExprKind {
     },
     Break,
     ArrayLiteral(Vec<Expr>),
+    ArrayIndex {
+        array: Box<Expr>,
+        index: Box<Expr>,
+    },
     ArrayCopy {
         value: Box<Expr>,
         count: Box<Expr>,
