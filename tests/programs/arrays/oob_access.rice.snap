@@ -1,0 +1,11 @@
+---
+source: tests/snapshots.rs
+assertion_line: 54
+expression: output
+---
+success = false
+stdout = ''
+stderr = '''
+Error:   × array index 2 out of bounds (length 2)
+
+'''

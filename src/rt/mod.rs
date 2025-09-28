@@ -27,7 +27,6 @@
 use std::{
     cell::OnceCell,
     collections::{HashMap, hash_map::Entry},
-    error::Error,
     ops::{Add, Deref, Div, Mul, Sub},
     string::String as StdString,
     sync::{Arc, LazyLock, OnceLock, RwLock, RwLockReadGuard, RwLockWriteGuard},
@@ -405,7 +404,8 @@ impl Runtime {
                 if any_ref.is_struct(&store).expect("reference unrooted") {
                     REFSTRUCT.clone()
                 } else if any_ref.is_array(&store).expect("reference unrooted") {
-                    REFSTRUCT.clone()
+                    ValType::ARRAYREF
+                    // REFSTRUCT.clone()
                 } else {
                     unreachable!()
                 }
@@ -458,7 +458,9 @@ impl Runtime {
         elements: Vec<Val>,
     ) -> Result<Val> {
         if elements.is_empty() {
-            return Err(anyhow::anyhow!("array must have at least one element"));
+            return Err(anyhow::anyhow!(
+                "should've been caught in typecheck: array must have at least one element"
+            ));
         }
 
         let element_ty = self.get_abstract_ty(store.as_context(), elements[0]);
@@ -638,9 +640,8 @@ impl Frame<'_> {
                 // oob
                 let len = array_ref.len(store!(self))?;
                 if i >= len {
-                    *self.rt.panic_mut() =
-                        Some(format!("array index {} out of bounds (length {})", i, len));
-                    return Ok(*self.rt.unit.get().unwrap());
+                    //changed
+                    bail!("array index {} out of bounds (length {})", i, len);
                 }
                 array_ref.get(store!(self), i)
             }
@@ -704,9 +705,8 @@ impl Frame<'_> {
                 // Bounds checking for array assignment
                 let len = array_ref.len(store!(self))?;
                 if i >= len {
-                    *self.rt.panic_mut() =
-                        Some(format!("array index {} out of bounds (length {})", i, len));
-                    return Ok(());
+                    //changed
+                    bail!("array index {} out of bounds (length {})", i, len);
                 }
                 array_ref.set(store!(self), i, value)?;
             }

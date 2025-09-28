@@ -858,12 +858,7 @@ impl Tcx {
                 (tir::ExprKind::Break, Type::unit())
             }
             ast::ExprKind::ArrayLiteral(exprs) => {
-                ensure!(
-                    !exprs.is_empty(),
-                    TypeError::EmptyArray {
-                        span: Span { start: 0, end: 0 }
-                    }
-                );
+                ensure!(!exprs.is_empty(), TypeError::EmptyArray { span: expr.span });
 
                 let exprs = exprs
                     .iter()
@@ -914,7 +909,7 @@ impl Tcx {
                 let value = self.check_expr(value)?;
                 let internal_type = value.ty;
                 let count = self.check_expr(count)?;
-                self.ty_equiv(Type::int(), count.ty, count.span);
+                self.ty_equiv(Type::int(), count.ty, count.span)?;
                 (
                     tir::ExprKind::ArrayCopy {
                         value: Box::new(value),

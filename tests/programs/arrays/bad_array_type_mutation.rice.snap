@@ -1,0 +1,18 @@
+---
+source: tests/snapshots.rs
+assertion_line: 54
+expression: output
+---
+success = false
+stdout = ''
+stderr = '''
+Error:   × type mismatch
+   ╭─[bad_array_type_mutation.rice:3:3]
+ 2 │   let a: [int] = [1, 2] in
+ 3 │   a[0] := "abcd";
+   ·   ──┬─
+   ·     ╰── expected `string`, found `int`
+ 4 │   println(int_to_string(a[0]))
+   ╰────
+
+'''

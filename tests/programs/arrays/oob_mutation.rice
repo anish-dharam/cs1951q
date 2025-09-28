@@ -1,5 +1,6 @@
 fn main() {
   let a: [int] = [1, 2] in
-  a[2] := 3;
-  println("hello")
+  a[7] := 3;
+  println("hello");
+  println(int_to_string(a[2]))
 }

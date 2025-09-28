@@ -1,0 +1,18 @@
+---
+source: tests/snapshots.rs
+assertion_line: 54
+expression: output
+---
+success = false
+stdout = ''
+stderr = '''
+Error:   × type mismatch
+   ╭─[bad_nested_type.rice:3:18]
+ 2 │   let a: [int] = [1, 2] in
+ 3 │   let b: [int] = [|a; 4|] in
+   ·                  ────┬───
+   ·                      ╰── expected `[[int]]`, found `[int]`
+ 4 │   println(int_to_string(b[0][0]));
+   ╰────
+
+'''

@@ -93,11 +93,14 @@ AtomicExpr: ExprKind = {
         exprs.insert(0, e1);
         ExprKind::Tuple(exprs)
     },
-    "[" "]" => ExprKind::ArrayLiteral(Vec::new()),
-    "[" <e1:Spanned<Expr>> "," <mut exprs:Comma<Spanned<Expr>>> "]" => {
-        exprs.insert(0, e1);
+    // "[" "]" => ExprKind::ArrayLiteral(Vec::new()),
+    "[" <exprs:Comma<Spanned<Expr>>> "]" => {
         ExprKind::ArrayLiteral(exprs)
     },
+    // "[" <e1:Spanned<Expr>> "," <mut exprs:Comma<Spanned<Expr>>> "]" => {
+    //     exprs.insert(0, e1);
+    //     ExprKind::ArrayLiteral(exprs)
+    // },
     "[|" <e:Spanned<AtomicExpr>> ";" <count:Spanned<AtomicExpr>> "|]" => 
         ExprKind::ArrayCopy { value: Box::new(e), count: Box::new(count) },
     "(" <e:Expr> ")" => e,

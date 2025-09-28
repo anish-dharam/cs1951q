@@ -1,0 +1,17 @@
+---
+source: tests/snapshots.rs
+assertion_line: 54
+expression: output
+---
+success = false
+stdout = ''
+stderr = '''
+Error:   × can't construct empty array
+   ╭─[empty_array.rice:2:21]
+ 1 │ fn main() {
+ 2 │   let a: [string] = [] in
+   ·                     ──
+ 3 │   println("hello")
+   ╰────
+
+'''
