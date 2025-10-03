@@ -1,0 +1,4 @@
+fn stringify(t: _) -> _ {
+    let tup: (_, _) = t in
+    tup.0 ˆ tup.1
+}

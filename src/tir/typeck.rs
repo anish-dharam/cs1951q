@@ -11,6 +11,97 @@ use crate::{
     utils::{Symbol, sym},
 };
 
+struct TypeUnifier {
+    parents: HashMap<Type, Type>, // hole type to type
+    ranks: HashMap<Type, usize>,  // hole type to rank
+    equational_constraints: Vec<(Type, Type)>,
+    projection_constraints: Vec<(Type, Type, usize)>, // t1 = t2.usize
+    castable_constraints: Vec<(Type, Type)>,          // t1 as t2
+}
+
+impl TypeUnifier {
+    fn new() -> Self {
+        Self {
+            parents: HashMap::new(),
+            ranks: HashMap::new(),
+            equational_constraints: Vec::new(),
+            projection_constraints: Vec::new(),
+            castable_constraints: Vec::new(),
+        }
+    }
+
+    fn initialize_hole(&mut self, ty: Type) {
+        if self.parents.contains_key(&ty) {
+            return;
+        }
+        assert!(matches!(ty.kind(), TypeKind::Hole(_)) && !self.ranks.contains_key(&ty));
+        self.ranks.insert(ty, 0);
+        self.parents.insert(ty, ty);
+    }
+
+    fn union(&mut self, ty1: Type, ty2: Type) {
+        self.initialize_hole(ty1);
+        self.initialize_hole(ty2);
+        let root1 = self.find(ty1);
+        let root2 = self.find(ty2);
+
+        if root1 == root2 {
+            return;
+        }
+
+        let rank1 = self.ranks.get(&root1).copied().unwrap_or(0);
+        let rank2 = self.ranks.get(&root2).copied().unwrap_or(0);
+
+        if rank1 > rank2 {
+            self.parents.insert(root2, root1);
+        } else if rank1 < rank2 {
+            self.parents.insert(root1, root2);
+        } else {
+            self.parents.insert(root2, root1);
+            self.ranks.insert(root1, rank1 + 1);
+        }
+    }
+
+    fn find(&mut self, mut ty: Type) -> Type {
+        self.initialize_hole(ty);
+        if !matches!(ty.kind(), TypeKind::Hole(_)) {
+            return ty;
+        }
+
+        let mut path = Vec::new();
+        while let Some(parent) = self.parents.get(&ty) {
+            path.push(ty);
+            ty = *parent;
+        }
+
+        for node in path {
+            self.parents.insert(node, ty);
+        }
+
+        ty
+    }
+
+    fn solve_constraints(&mut self) -> bool {
+        self.solve_equational_constraints()
+            & self.solve_projection_constraints()
+            & self.solve_castable_constraints()
+    }
+
+    fn solve_equational_constraints(&mut self) -> bool {
+        false
+    }
+    fn solve_projection_constraints(&mut self) -> bool {
+        false
+    }
+    fn solve_castable_constraints(&mut self) -> bool {
+        false
+    }
+
+    fn subst_func(&mut self) -> (impl FnMut(usize) -> Type) {
+        |hole_id| self.find(Type::hole(hole_id))
+    }
+}
+
 #[derive(Diagnostic, Error, Debug)]
 pub enum TypeError {
     #[error("undefined variable `{name}`")]
@@ -184,6 +275,7 @@ pub struct Globals {
 pub struct Tcx {
     globals: Globals,
     num_loops: u32,
+    type_unifier: TypeUnifier,
 }
 
 /// A predicate which must hold on a concrete type, excluding equality.
@@ -241,6 +333,7 @@ impl Tcx {
         let mut tcx = Tcx {
             globals: Globals::default(),
             num_loops: 0,
+            type_unifier: TypeUnifier::new(),
         };
 
         // Load stdlib into the type context

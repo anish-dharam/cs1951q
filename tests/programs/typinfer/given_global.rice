@@ -1,0 +1,3 @@
+fn idx(x: _) -> { x }
+
+fn main() {id(0); ()}
