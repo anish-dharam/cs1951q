@@ -22,5 +22,6 @@ pub fn typecheck(prog: ast::Ast) -> Result<(Tcx, Program)> {
     let mut tir = tcx.check(&prog.prog)?;
     desugar::desugar(&mut tir);
     closure::closure_conversion(&tcx, &mut tir);
+    // println!("{:?}", tir.functions());
     Ok((tcx, tir))
 }

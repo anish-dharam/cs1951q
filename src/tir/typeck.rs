@@ -64,7 +64,6 @@ pub enum TypeError {
         #[label("non-numeric type")]
         span: Span,
     },
-
     #[error("Struct {name} has not been defined")]
     UnknownStruct {
         name: Symbol,
@@ -204,12 +203,14 @@ impl TypeUnifier {
 
     fn find(&mut self, ty: Type) -> Type {
         self.initialize_type(ty);
-        if !matches!(ty.kind(), TypeKind::Hole(_)) {
-            return ty;
-        }
-
-        let res = match (self.parents.get(&ty)) {
-            Some(parent_ty) => self.find(*parent_ty),
+        let res = match self.parents.get(&ty) {
+            Some(parent_ty) => {
+                if *parent_ty == ty {
+                    ty
+                } else {
+                    self.find(*parent_ty)
+                }
+            }
             None => panic!("Shouldn't have a parent type that isn't a key in TypeUnifier.parents"),
         };
         self.parents.insert(ty, res);
@@ -240,9 +241,18 @@ impl TypeUnifier {
     fn solve_projection_constraints(&mut self) -> Result<()> {
         let constraints = std::mem::take(&mut self.projection_constraints);
         for (ty1, ty2, i, span) in constraints {
-            match ty2.kind() {
+            // Find the representative of ty2 after equational constraint solving
+            let ty2_rep = self.find(ty2);
+
+            match ty2_rep.kind() {
                 TypeKind::Tuple(items) => match items.get(i) {
                     Some(elem_type) => {
+                        println!("ty1: {:?}, elem_type: {:?}", ty1, elem_type);
+                        println!(
+                            "ty1parent: {:?}, elem_typeparent: {:?}",
+                            self.find(ty1),
+                            self.find(*elem_type)
+                        );
                         ensure!(
                             self.union(ty1, *elem_type),
                             TypeError::InvalidProjectionType {
@@ -256,17 +266,18 @@ impl TypeUnifier {
                         span: span
                     }),
                 },
-                TypeKind::Array(internal_type) => ensure!(
-                    self.union(ty1, *internal_type),
-                    TypeError::InvalidProjectionType {
-                        span: span,
-                        ty: ty1
-                    }
-                ),
+                TypeKind::Hole(_) => {
+                    // If ty2 is still a hole, we can't solve this constraint yet
+                    // This means the type is under-constrained
+                    bail!(TypeError::InvalidProjectionType {
+                        ty: ty2_rep,
+                        span: span
+                    });
+                }
                 _ => ensure!(
                     false,
                     TypeError::InvalidProjectionType {
-                        ty: ty2,
+                        ty: ty2_rep,
                         span: span
                     }
                 ),
@@ -289,7 +300,7 @@ impl TypeUnifier {
         Ok(())
     }
 
-    fn subst_func(&mut self) -> (impl FnMut(usize) -> Type) {
+    fn subst_func(&mut self) -> impl FnMut(usize) -> Type {
         |hole_id| self.find(Type::hole(hole_id))
     }
 }
@@ -444,6 +455,48 @@ impl Tcx {
             .push((ty1, ty2, span))
     }
 
+    fn find_next_hole_id(&self) -> usize {
+        // Find the maximum hole ID currently in use and return the next one
+        let mut max_hole_id = 0;
+
+        // Check all types in the parents map
+        for ty in self.type_unifier.parents.keys() {
+            if let TypeKind::Hole(id) = ty.kind() {
+                max_hole_id = max_hole_id.max(*id);
+            }
+        }
+
+        // Also check all types in constraints
+        for (ty1, ty2, _) in &self.type_unifier.equational_constraints {
+            if let TypeKind::Hole(id) = ty1.kind() {
+                max_hole_id = max_hole_id.max(*id);
+            }
+            if let TypeKind::Hole(id) = ty2.kind() {
+                max_hole_id = max_hole_id.max(*id);
+            }
+        }
+
+        for (ty1, ty2, _, _) in &self.type_unifier.projection_constraints {
+            if let TypeKind::Hole(id) = ty1.kind() {
+                max_hole_id = max_hole_id.max(*id);
+            }
+            if let TypeKind::Hole(id) = ty2.kind() {
+                max_hole_id = max_hole_id.max(*id);
+            }
+        }
+
+        for (ty1, ty2, _) in &self.type_unifier.castable_constraints {
+            if let TypeKind::Hole(id) = ty1.kind() {
+                max_hole_id = max_hole_id.max(*id);
+            }
+            if let TypeKind::Hole(id) = ty2.kind() {
+                max_hole_id = max_hole_id.max(*id);
+            }
+        }
+
+        max_hole_id + 1
+    }
+
     pub fn check(&mut self, prog: &ast::Program) -> Result<tir::Program> {
         let mut tir_prog = Vec::new();
         for item in &prog.0 {
@@ -453,6 +506,16 @@ impl Tcx {
         self.type_unifier.solve_constraints()?;
 
         self.globals.funcs.retain(|_, tds| !tds.is_empty());
+
+        let mut s = self.type_unifier.subst_func();
+
+        for f in &mut tir_prog {
+            for (_, ty) in &mut f.params {
+                *ty = ty.subst(&mut s);
+            }
+            f.ret_ty = f.ret_ty.subst(&mut s);
+            f.body.ty = f.body.ty.subst(&mut s);
+        }
 
         let prog = tir::Program::new(tir_prog);
 
@@ -725,44 +788,67 @@ impl Tcx {
             }
             ast::ExprKind::Project { e, i } => {
                 let e = self.check_expr(e)?;
-                let tys = match e.ty.kind() {
-                    TypeKind::Tuple(tys) => tys,
-                    TypeKind::Struct(name) => {
-                        ensure_let!(
-                            Some(tys) = self.globals.structs.get(name),
-                            TypeError::UnknownStruct {
-                                name: *name,
-                                span: e.span
-                            }
-                        );
-                        tys
-                    }
-                    _ => bail!(TypeError::InvalidProjectionType {
-                        ty: e.ty,
-                        span: e.span
-                    }),
-                };
 
-                ensure_let!(
-                    Some(ith_ty) = tys.get(*i),
-                    TypeError::InvalidProjectionIndex {
-                        index: *i,
-                        span: expr.span,
-                    }
-                );
+                // Check if we're projecting from a hole type
+                if matches!(e.ty.kind(), TypeKind::Hole(_)) {
+                    // For hole types, we need to create a fresh hole for the projection result
+                    // We can't use parents.len() since parents isn't initialized yet
+                    // Instead, we'll create a new hole with a unique ID by finding the next available hole ID
+                    let next_hole_id = self.find_next_hole_id();
+                    let result_hole = Type::hole(next_hole_id);
+                    self.type_unifier.initialize_type(result_hole);
 
-                self.type_unifier
-                    .projection_constraints
-                    .push((*ith_ty, e.ty, *i, expr.span));
-                // self.push_projection_constraint(*ith_ty, e.ty, *i, expr.span);
+                    // Add projection constraint to be solved later
+                    self.type_unifier.projection_constraints.push((
+                        result_hole,
+                        e.ty,
+                        *i,
+                        expr.span,
+                    ));
 
-                (
-                    tir::ExprKind::Project {
-                        e: Box::new(e),
-                        i: *i,
-                    },
-                    *ith_ty,
-                )
+                    (
+                        tir::ExprKind::Project {
+                            e: Box::new(e),
+                            i: *i,
+                        },
+                        result_hole,
+                    )
+                } else {
+                    // Handle concrete types as before
+                    let tys = match e.ty.kind() {
+                        TypeKind::Tuple(tys) => tys,
+                        TypeKind::Struct(name) => {
+                            ensure_let!(
+                                Some(tys) = self.globals.structs.get(name),
+                                TypeError::UnknownStruct {
+                                    name: *name,
+                                    span: e.span
+                                }
+                            );
+                            tys
+                        }
+                        _ => bail!(TypeError::InvalidProjectionType {
+                            ty: e.ty,
+                            span: e.span
+                        }),
+                    };
+
+                    ensure_let!(
+                        Some(ith_ty) = tys.get(*i),
+                        TypeError::InvalidProjectionIndex {
+                            index: *i,
+                            span: expr.span,
+                        }
+                    );
+
+                    (
+                        tir::ExprKind::Project {
+                            e: Box::new(e),
+                            i: *i,
+                        },
+                        *ith_ty,
+                    )
+                }
             }
             ast::ExprKind::Call { f, args } => {
                 let f = self.check_expr(f)?;
