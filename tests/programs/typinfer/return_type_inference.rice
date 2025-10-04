@@ -1,0 +1,26 @@
+fn get_number() -> _ {
+    42
+}
+
+fn get_string() -> _ {
+    "Hello World"
+}
+
+fn get_tuple() -> _ {
+    (1, 2, 3)
+}
+
+fn get_array() -> _ {
+    [1, 2, 3, 4]
+}
+
+fn main() {
+    let num = get_number() in
+    let str = get_string() in
+    let tup = get_tuple() in
+    let arr = get_array() in
+    println(int_to_string(num));
+    println(str);
+    println(int_to_string(tup.0));
+    println(int_to_string(arr[0]))
+}

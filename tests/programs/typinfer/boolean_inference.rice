@@ -1,0 +1,42 @@
+fn and_op(a: _, b: _) -> _ {
+    if a { b } else { false }
+}
+
+fn or_op(a: _, b: _) -> _ {
+    if a { true } else { b }
+}
+
+fn not_op(x: _) -> _ {
+    if x { false } else { true }
+}
+
+fn compare_values(x: _, y: _) -> _ {
+    x == y
+}
+
+fn main() {
+    let result1 = and_op(true, false) in
+    let result2 = or_op(false, true) in
+    let result3 = not_op(true) in
+    let result4 = compare_values(5, 5) in
+    if result1 {
+        println("and true")
+    } else {
+        println("and false")
+    };
+    if result2 {
+        println("or true")
+    } else {
+        println("or false")
+    };
+    if result3 {
+        println("not true")
+    } else {
+        println("not false")
+    };
+    if result4 {
+        println("equal")
+    } else {
+        println("not equal")
+    }
+}

@@ -1,0 +1,18 @@
+---
+source: tests/snapshots.rs
+assertion_line: 54
+expression: output
+---
+success = false
+stdout = ''
+stderr = '''
+Error:   × invalid cast
+   ╭─[impl_bad_cast.rice:8:3]
+ 7 │ fn main() { 
+ 8 │   (new Foo(0)) as @Bar; ()
+   ·   ──────────┬─────────
+   ·             ╰── cannot cast from `Foo` to `@Bar`
+ 9 │ }
+   ╰────
+
+'''

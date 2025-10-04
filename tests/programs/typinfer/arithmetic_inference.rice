@@ -1,0 +1,14 @@
+fn add(x: _, y: _) -> _ {
+    x + y
+}
+
+fn multiply(x: _, y: _) -> _ {
+    x * y
+}
+
+fn main() {
+    let a = add(5, 3) in
+    let b = multiply(4, 6) in
+    println(int_to_string(a));
+    println(int_to_string(b))
+}

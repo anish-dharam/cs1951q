@@ -1,0 +1,24 @@
+fn max(a: _, b: _) -> _ {
+    if a > b { a } else { b }
+}
+
+fn abs(x: _) -> _ {
+    if x < 0 { -x } else { x }
+}
+
+fn is_positive(x: _) -> _ {
+    if x > 0 { true } else { false }
+}
+
+fn main() {
+    let larger = max(10, 7) in
+    let absolute = abs(-5) in
+    let positive = is_positive(3) in
+    println(int_to_string(larger));
+    println(int_to_string(absolute));
+    if positive {
+        println("positive")
+    } else {
+        println("not positive")
+    }
+}

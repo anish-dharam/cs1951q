@@ -1,0 +1,22 @@
+fn process_three_params(a: _, b: _, c: _) -> _ {
+    a + b + c
+}
+
+fn combine_strings(s1: _, s2: _, s3: _) -> _ {
+    s1 ^ s2 ^ s3
+}
+
+fn create_triple(x: _, y: _, z: _) -> _ {
+    (x, y, z)
+}
+
+fn main() {
+    let sum = process_three_params(1, 2, 3) in
+    let combined = combine_strings("A", "B", "C") in
+    let triple = create_triple(10, 20, 30) in
+    println(int_to_string(sum));
+    println(combined);
+    println(int_to_string(triple.0));
+    println(int_to_string(triple.1));
+    println(int_to_string(triple.2))
+}

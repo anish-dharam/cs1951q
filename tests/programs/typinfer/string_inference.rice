@@ -1,0 +1,20 @@
+fn greet(name: _) -> _ {
+    "Hello " ^ name
+}
+
+fn repeat(s: _, n: _) -> _ {
+    let result = "" in
+    let i = 0 in
+    while i < n {
+        result := result ^ s;
+        i := i + 1
+    };
+    result
+}
+
+fn main() {
+    let message = greet("World") in
+    let repeated = repeat("Hi ", 3) in
+    println(message);
+    println(repeated)
+}

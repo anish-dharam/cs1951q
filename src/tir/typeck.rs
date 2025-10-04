@@ -247,12 +247,12 @@ impl TypeUnifier {
             match ty2_rep.kind() {
                 TypeKind::Tuple(items) => match items.get(i) {
                     Some(elem_type) => {
-                        println!("ty1: {:?}, elem_type: {:?}", ty1, elem_type);
-                        println!(
-                            "ty1parent: {:?}, elem_typeparent: {:?}",
-                            self.find(ty1),
-                            self.find(*elem_type)
-                        );
+                        // println!("ty1: {:?}, elem_type: {:?}", ty1, elem_type);
+                        // println!(
+                        //     "ty1parent: {:?}, elem_typeparent: {:?}",
+                        //     self.find(ty1),
+                        //     self.find(*elem_type)
+                        // );
                         ensure!(
                             self.union(ty1, *elem_type),
                             TypeError::InvalidProjectionType {
@@ -288,6 +288,13 @@ impl TypeUnifier {
     fn solve_castable_constraints(&mut self) -> Result<()> {
         let constraints = std::mem::take(&mut self.castable_constraints);
         for (ty1, ty2, span) in constraints {
+            if matches!(ty1.kind(), TypeKind::Struct(_))
+                || matches!(ty1.kind(), TypeKind::Interface(_))
+                || matches!(ty2.kind(), TypeKind::Struct(_))
+                || matches!(ty2.kind(), TypeKind::Interface(_))
+            {
+                continue;
+            }
             ensure!(
                 *ty1.kind() == TypeKind::Int && *ty2.kind() == TypeKind::Float,
                 TypeError::InvalidCast {
@@ -443,12 +450,6 @@ impl Tcx {
             .push((ty1, ty2, span))
     }
 
-    fn push_projection_constraint(&mut self, ty1: Type, ty2: Type, i: usize, span: Span) {
-        self.type_unifier
-            .projection_constraints
-            .push((ty1, ty2, i, span))
-    }
-
     fn push_castable_constraint(&mut self, ty1: Type, ty2: Type, span: Span) {
         self.type_unifier
             .castable_constraints
@@ -512,10 +513,15 @@ impl Tcx {
         for f in &mut tir_prog {
             for (_, ty) in &mut f.params {
                 *ty = ty.subst(&mut s);
+                println!("{}", ty);
             }
             f.ret_ty = f.ret_ty.subst(&mut s);
+            println!("{}", f.ret_ty);
             f.body.ty = f.body.ty.subst(&mut s);
+            println!("{}", f.body.ty);
         }
+
+        println!("{:?}", tir_prog);
 
         let prog = tir::Program::new(tir_prog);
 
@@ -789,16 +795,14 @@ impl Tcx {
             ast::ExprKind::Project { e, i } => {
                 let e = self.check_expr(e)?;
 
-                // Check if we're projecting from a hole type
+                // we're projecting from a hole type
                 if matches!(e.ty.kind(), TypeKind::Hole(_)) {
-                    // For hole types, we need to create a fresh hole for the projection result
-                    // We can't use parents.len() since parents isn't initialized yet
-                    // Instead, we'll create a new hole with a unique ID by finding the next available hole ID
+                    // we need to create a fresh hole for the projection result
+                    // we'll create a new hole with a unique ID by finding the next available hole ID
                     let next_hole_id = self.find_next_hole_id();
                     let result_hole = Type::hole(next_hole_id);
                     self.type_unifier.initialize_type(result_hole);
 
-                    // Add projection constraint to be solved later
                     self.type_unifier.projection_constraints.push((
                         result_hole,
                         e.ty,
@@ -814,7 +818,7 @@ impl Tcx {
                         result_hole,
                     )
                 } else {
-                    // Handle concrete types as before
+                    // handle concrete types as before
                     let tys = match e.ty.kind() {
                         TypeKind::Tuple(tys) => tys,
                         TypeKind::Struct(name) => {

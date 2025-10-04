@@ -1,0 +1,31 @@
+fn sum_array(arr: _) -> _ {
+    let sum = 0 in
+    let i = 0 in
+    while i < 5 {
+        sum := sum + arr[i];
+        i := i + 1
+    };
+    sum
+}
+
+fn find_max(arr: _) -> _ {
+    let max_val = arr[0] in
+    let i = 1 in
+    while i < 4 {
+        if arr[i] > max_val {
+            max_val := arr[i]
+        } else {
+            ()
+        };
+        i := i + 1
+    };
+    max_val
+}
+
+fn main() {
+    let numbers: [int] = [3, 7, 2, 9, 1] in
+    let total = sum_array(numbers) in
+    let maximum = find_max(numbers) in
+    println(int_to_string(total));
+    println(int_to_string(maximum))
+}

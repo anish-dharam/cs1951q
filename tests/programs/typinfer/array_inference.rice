@@ -1,0 +1,25 @@
+fn get_first(arr: _) -> _ {
+    arr[0]
+}
+
+fn get_length(arr: _) -> _ {
+    let len = 0 in
+    let i = 0 in
+    while i < 10 {
+        if arr[i] > 0 {
+            len := len + 1
+        } else {
+            ()
+        };
+        i := i + 1
+    };
+    len
+}
+
+fn main() {
+    let numbers: [int] = [1, 2, 3, 4, 5] in
+    let first = get_first(numbers) in
+    let length = get_length(numbers) in
+    println(int_to_string(first));
+    println(int_to_string(length))
+}

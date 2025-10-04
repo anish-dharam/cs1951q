@@ -1,0 +1,22 @@
+fn swap(pair: _) -> _ {
+    (pair.1, pair.0)
+}
+
+fn add_coords(p1: _, p2: _) -> _ {
+    (p1.0 + p2.0, p1.1 + p2.1)
+}
+
+fn get_x(point: _) -> _ {
+    point.0
+}
+
+fn main() {
+    let point1: (int, int) = (3, 4) in
+    let point2: (int, int) = (1, 2) in
+    let swapped = swap(point1) in
+    let sum = add_coords(point1, point2) in
+    let x = get_x(sum) in
+    println(int_to_string(swapped.0));
+    println(int_to_string(swapped.1));
+    println(int_to_string(x))
+}
