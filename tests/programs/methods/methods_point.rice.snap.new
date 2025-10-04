@@ -1,0 +1,17 @@
+---
+source: tests/snapshots.rs
+assertion_line: 54
+expression: output
+---
+success = false
+stdout = ''
+stderr = '''
+Error:   × cannot project from type Point
+    ╭─[methods_point.rice:9:25]
+  8 │   fn to_string(self: Self) -> string {
+  9 │     "(" ^ int_to_string(self.0) ^ ", " ^ int_to_string(self.1) ^ ")"
+    ·                         ──────
+ 10 │   }
+    ╰────
+
+'''

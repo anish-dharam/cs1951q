@@ -11,97 +11,6 @@ use crate::{
     utils::{Symbol, sym},
 };
 
-struct TypeUnifier {
-    parents: HashMap<Type, Type>, // hole type to type
-    ranks: HashMap<Type, usize>,  // hole type to rank
-    equational_constraints: Vec<(Type, Type)>,
-    projection_constraints: Vec<(Type, Type, usize)>, // t1 = t2.usize
-    castable_constraints: Vec<(Type, Type)>,          // t1 as t2
-}
-
-impl TypeUnifier {
-    fn new() -> Self {
-        Self {
-            parents: HashMap::new(),
-            ranks: HashMap::new(),
-            equational_constraints: Vec::new(),
-            projection_constraints: Vec::new(),
-            castable_constraints: Vec::new(),
-        }
-    }
-
-    fn initialize_hole(&mut self, ty: Type) {
-        if self.parents.contains_key(&ty) {
-            return;
-        }
-        assert!(matches!(ty.kind(), TypeKind::Hole(_)) && !self.ranks.contains_key(&ty));
-        self.ranks.insert(ty, 0);
-        self.parents.insert(ty, ty);
-    }
-
-    fn union(&mut self, ty1: Type, ty2: Type) {
-        self.initialize_hole(ty1);
-        self.initialize_hole(ty2);
-        let root1 = self.find(ty1);
-        let root2 = self.find(ty2);
-
-        if root1 == root2 {
-            return;
-        }
-
-        let rank1 = self.ranks.get(&root1).copied().unwrap_or(0);
-        let rank2 = self.ranks.get(&root2).copied().unwrap_or(0);
-
-        if rank1 > rank2 {
-            self.parents.insert(root2, root1);
-        } else if rank1 < rank2 {
-            self.parents.insert(root1, root2);
-        } else {
-            self.parents.insert(root2, root1);
-            self.ranks.insert(root1, rank1 + 1);
-        }
-    }
-
-    fn find(&mut self, mut ty: Type) -> Type {
-        self.initialize_hole(ty);
-        if !matches!(ty.kind(), TypeKind::Hole(_)) {
-            return ty;
-        }
-
-        let mut path = Vec::new();
-        while let Some(parent) = self.parents.get(&ty) {
-            path.push(ty);
-            ty = *parent;
-        }
-
-        for node in path {
-            self.parents.insert(node, ty);
-        }
-
-        ty
-    }
-
-    fn solve_constraints(&mut self) -> bool {
-        self.solve_equational_constraints()
-            & self.solve_projection_constraints()
-            & self.solve_castable_constraints()
-    }
-
-    fn solve_equational_constraints(&mut self) -> bool {
-        false
-    }
-    fn solve_projection_constraints(&mut self) -> bool {
-        false
-    }
-    fn solve_castable_constraints(&mut self) -> bool {
-        false
-    }
-
-    fn subst_func(&mut self) -> (impl FnMut(usize) -> Type) {
-        |hole_id| self.find(Type::hole(hole_id))
-    }
-}
-
 #[derive(Diagnostic, Error, Debug)]
 pub enum TypeError {
     #[error("undefined variable `{name}`")]
@@ -248,6 +157,143 @@ pub enum TypeError {
     },
 }
 
+struct TypeUnifier {
+    parents: HashMap<Type, Type>, // hole type to type
+    equational_constraints: Vec<(Type, Type, Span)>,
+    projection_constraints: Vec<(Type, Type, usize, Span)>, // t1 = t2.usize
+    castable_constraints: Vec<(Type, Type, Span)>,          // t1 as t2
+}
+
+impl TypeUnifier {
+    fn new() -> Self {
+        Self {
+            parents: HashMap::new(),
+            equational_constraints: Vec::new(),
+            projection_constraints: Vec::new(),
+            castable_constraints: Vec::new(),
+        }
+    }
+
+    fn initialize_type(&mut self, ty: Type) {
+        if self.parents.contains_key(&ty) {
+            return;
+        }
+        self.parents.insert(ty, ty);
+    }
+
+    fn union(&mut self, ty1: Type, ty2: Type) -> bool {
+        self.initialize_type(ty1);
+        self.initialize_type(ty2);
+        let root1 = self.find(ty1);
+        let root2 = self.find(ty2);
+        if root1 == root2 {
+            return true;
+        }
+
+        // given from line 44, not ==
+        if !matches!(root1.kind(), TypeKind::Hole(_)) && !matches!(root2.kind(), TypeKind::Hole(_))
+        {
+            return false;
+        } else if !matches!(root1.kind(), TypeKind::Hole(_)) {
+            self.parents.insert(root2, root1);
+        } else {
+            self.parents.insert(root1, root2);
+        }
+        return true;
+    }
+
+    fn find(&mut self, ty: Type) -> Type {
+        self.initialize_type(ty);
+        if !matches!(ty.kind(), TypeKind::Hole(_)) {
+            return ty;
+        }
+
+        let res = match (self.parents.get(&ty)) {
+            Some(parent_ty) => self.find(*parent_ty),
+            None => panic!("Shouldn't have a parent type that isn't a key in TypeUnifier.parents"),
+        };
+        self.parents.insert(ty, res);
+        res
+    }
+
+    fn solve_constraints(&mut self) -> Result<()> {
+        self.solve_equational_constraints()?;
+        self.solve_projection_constraints()?;
+        self.solve_castable_constraints()?;
+        Ok(())
+    }
+
+    fn solve_equational_constraints(&mut self) -> Result<()> {
+        let constraints = std::mem::take(&mut self.equational_constraints);
+        for (ty1, ty2, span) in constraints {
+            ensure!(
+                self.union(ty1, ty2),
+                TypeError::TypeMismatch {
+                    expected: ty1,
+                    actual: ty2,
+                    span: span
+                }
+            );
+        }
+        Ok(())
+    }
+    fn solve_projection_constraints(&mut self) -> Result<()> {
+        let constraints = std::mem::take(&mut self.projection_constraints);
+        for (ty1, ty2, i, span) in constraints {
+            match ty2.kind() {
+                TypeKind::Tuple(items) => match items.get(i) {
+                    Some(elem_type) => {
+                        ensure!(
+                            self.union(ty1, *elem_type),
+                            TypeError::InvalidProjectionType {
+                                span: span,
+                                ty: ty1
+                            }
+                        );
+                    }
+                    None => bail!(TypeError::InvalidProjectionIndex {
+                        index: i,
+                        span: span
+                    }),
+                },
+                TypeKind::Array(internal_type) => ensure!(
+                    self.union(ty1, *internal_type),
+                    TypeError::InvalidProjectionType {
+                        span: span,
+                        ty: ty1
+                    }
+                ),
+                _ => ensure!(
+                    false,
+                    TypeError::InvalidProjectionType {
+                        ty: ty2,
+                        span: span
+                    }
+                ),
+            }
+        }
+        Ok(())
+    }
+    fn solve_castable_constraints(&mut self) -> Result<()> {
+        let constraints = std::mem::take(&mut self.castable_constraints);
+        for (ty1, ty2, span) in constraints {
+            ensure!(
+                *ty1.kind() == TypeKind::Int && *ty2.kind() == TypeKind::Float,
+                TypeError::InvalidCast {
+                    from: ty1,
+                    to: ty2,
+                    span,
+                }
+            );
+        }
+        Ok(())
+    }
+
+    fn subst_func(&mut self) -> (impl FnMut(usize) -> Type) {
+        |hole_id| self.find(Type::hole(hole_id))
+    }
+}
+
 pub struct TypeData {
     pub ty: Type,
     pub used: bool,
@@ -380,11 +426,31 @@ impl Tcx {
         Some((td.name, td.ty))
     }
 
+    fn push_equational_constraint(&mut self, ty1: Type, ty2: Type, span: Span) {
+        self.type_unifier
+            .equational_constraints
+            .push((ty1, ty2, span))
+    }
+
+    fn push_projection_constraint(&mut self, ty1: Type, ty2: Type, i: usize, span: Span) {
+        self.type_unifier
+            .projection_constraints
+            .push((ty1, ty2, i, span))
+    }
+
+    fn push_castable_constraint(&mut self, ty1: Type, ty2: Type, span: Span) {
+        self.type_unifier
+            .castable_constraints
+            .push((ty1, ty2, span))
+    }
+
     pub fn check(&mut self, prog: &ast::Program) -> Result<tir::Program> {
         let mut tir_prog = Vec::new();
         for item in &prog.0 {
             self.check_item(&mut tir_prog, item)?;
         }
+
+        self.type_unifier.solve_constraints()?;
 
         self.globals.funcs.retain(|_, tds| !tds.is_empty());
 
@@ -520,7 +586,8 @@ impl Tcx {
         }
 
         let ret_ty = func.ret_ty.unwrap_or_else(Type::unit);
-        self.ty_equiv(body.ty, ret_ty, body.span)?;
+        self.push_equational_constraint(body.ty, ret_ty, body.span);
+        // self.ty_equiv(body.ty, ret_ty, body.span)?;
 
         Ok(tir::Function {
             name: func.name.value,
@@ -575,7 +642,8 @@ impl Tcx {
                     .zip(params)
                     .map(|(arg, ty)| {
                         let arg = self.check_expr(arg)?;
-                        self.ty_equiv(ty, arg.ty, arg.span)?;
+                        self.push_equational_constraint(ty, arg.ty, arg.span);
+                        // self.ty_equiv(ty, arg.ty, arg.span)?;
                         Ok(arg)
                     })
                     .collect::<Result<Vec<_>>>()?;
@@ -586,32 +654,43 @@ impl Tcx {
                 let right = self.check_expr(right)?;
                 let out_ty = match op {
                     Binop::Shl | Binop::Shr | Binop::BitAnd | Binop::BitOr => {
-                        self.ty_equiv(Type::int(), left.ty, left.span)?;
-                        self.ty_equiv(Type::int(), right.ty, right.span)?;
+                        self.push_equational_constraint(Type::int(), left.ty, left.span);
+                        self.push_equational_constraint(Type::int(), right.ty, right.span);
+                        // self.ty_equiv(Type::int(), left.ty, left.span)?;
+                        // self.ty_equiv(Type::int(), right.ty, right.span)?;
                         Type::int()
                     }
                     Binop::Add | Binop::Sub | Binop::Mul | Binop::Div | Binop::Rem | Binop::Exp => {
-                        self.ty_constraint(TypeConstraint::Numeric, left.ty, left.span)?;
-                        self.ty_equiv(left.ty, right.ty, right.span)?;
+                        self.push_equational_constraint(Type::int(), left.ty, left.span);
+                        self.push_equational_constraint(left.ty, right.ty, right.span);
+                        // self.ty_constraint(TypeConstraint::Numeric, left.ty, left.span)?;
+                        // self.ty_equiv(left.ty, right.ty, right.span)?;
                         left.ty
                     }
                     Binop::Ge | Binop::Gt | Binop::Le | Binop::Lt => {
-                        self.ty_constraint(TypeConstraint::Numeric, left.ty, left.span)?;
-                        self.ty_equiv(left.ty, right.ty, right.span)?;
+                        self.push_equational_constraint(Type::int(), left.ty, left.span);
+                        self.push_equational_constraint(left.ty, right.ty, right.span);
+                        // self.ty_constraint(TypeConstraint::Numeric, left.ty, left.span)?;
+                        // self.ty_equiv(left.ty, right.ty, right.span)?;
                         Type::bool()
                     }
                     Binop::Or | Binop::And => {
-                        self.ty_equiv(Type::bool(), left.ty, left.span)?;
-                        self.ty_equiv(Type::bool(), right.ty, right.span)?;
+                        self.push_equational_constraint(Type::bool(), left.ty, left.span);
+                        self.push_equational_constraint(Type::bool(), right.ty, right.span);
+                        // self.ty_equiv(Type::bool(), left.ty, left.span)?;
+                        // self.ty_equiv(Type::bool(), right.ty, right.span)?;
                         Type::bool()
                     }
                     Binop::Eq | Binop::Neq => {
-                        self.ty_equiv(left.ty, right.ty, right.span)?;
+                        self.push_equational_constraint(left.ty, right.ty, right.span);
+                        // self.ty_equiv(left.ty, right.ty, right.span)?;
                         Type::bool()
                     }
                     Binop::Concat => {
-                        self.ty_equiv(Type::string(), left.ty, left.span)?;
-                        self.ty_equiv(Type::string(), right.ty, left.span)?;
+                        self.push_equational_constraint(Type::string(), left.ty, left.span);
+                        self.push_equational_constraint(Type::string(), right.ty, right.span);
+                        // self.ty_equiv(Type::string(), left.ty, left.span)?;
+                        // self.ty_equiv(Type::string(), right.ty, left.span)?;
                         Type::string()
                     }
                 };
@@ -626,7 +705,8 @@ impl Tcx {
             }
             ast::ExprKind::Cast { e, ty } => {
                 let e = self.check_expr(e)?;
-                self.ty_constraint(TypeConstraint::CastableTo(*ty), e.ty, expr.span)?;
+                self.push_castable_constraint(e.ty, *ty, expr.span);
+                // self.ty_constraint(TypeConstraint::CastableTo(*ty), e.ty, expr.span)?;
                 (
                     tir::ExprKind::Cast {
                         e: Box::new(e),
@@ -671,6 +751,11 @@ impl Tcx {
                     }
                 );
 
+                self.type_unifier
+                    .projection_constraints
+                    .push((*ith_ty, e.ty, *i, expr.span));
+                // self.push_projection_constraint(*ith_ty, e.ty, *i, expr.span);
+
                 (
                     tir::ExprKind::Project {
                         e: Box::new(e),
@@ -704,7 +789,8 @@ impl Tcx {
                     .zip_eq(inputs)
                     .map(|(arg, param_ty)| {
                         let e = self.check_expr(arg)?;
-                        self.ty_equiv(e.ty, *param_ty, e.span)?;
+                        self.push_equational_constraint(e.ty, *param_ty, e.span);
+                        // self.ty_equiv(e.ty, *param_ty, e.span)?;
                         Ok(e)
                     })
                     .collect::<Result<Vec<_>>>()?;
@@ -794,7 +880,8 @@ impl Tcx {
                     .zip(sig.inputs())
                     .map(|(arg, expected_ty)| {
                         let arg = self.check_expr(arg)?;
-                        self.ty_equiv(*expected_ty, arg.ty, arg.span)?;
+                        self.push_equational_constraint(*expected_ty, arg.ty, arg.span);
+                        // self.ty_equiv(*expected_ty, arg.ty, arg.span)?;
                         Ok(arg)
                     })
                     .collect::<Result<Vec<_>>>()?;
@@ -818,7 +905,8 @@ impl Tcx {
                 let e1 = self.check_expr(e1)?;
                 let inferred_ty = match ty {
                     Some(ty) => {
-                        self.ty_equiv(e1.ty, *ty, e1.span)?;
+                        self.push_equational_constraint(e1.ty, *ty, e1.span);
+                        // self.ty_equiv(e1.ty, *ty, e1.span)?;
                         *ty
                     }
                     None => e1.ty, // Use inferred type from e1
@@ -844,18 +932,21 @@ impl Tcx {
             ast::ExprKind::If { cond, then_, else_ } => {
                 let cond_span = cond.span;
                 let cond = self.check_expr(cond)?;
-                self.ty_equiv(Type::bool(), cond.ty, cond_span)?;
+                self.push_equational_constraint(Type::bool(), cond.ty, cond_span);
+                // self.ty_equiv(Type::bool(), cond.ty, cond_span)?;
                 let then_ = self.check_expr(then_)?;
 
                 let (else_, ty) = match else_ {
                     Some(else_expr) => {
                         let else_ = self.check_expr(else_expr)?;
-                        self.ty_equiv(then_.ty, else_.ty, else_.span)?;
+                        self.push_equational_constraint(then_.ty, else_.ty, else_.span);
+                        // self.ty_equiv(then_.ty, else_.ty, else_.span)?;
                         (Some(Box::new(else_)), then_.ty)
                     }
                     None => {
                         // If without else must have unit type in then branch
-                        self.ty_equiv(Type::unit(), then_.ty, then_.span)?;
+                        self.push_equational_constraint(Type::unit(), then_.ty, then_.span);
+                        // self.ty_equiv(Type::unit(), then_.ty, then_.span)?;
                         (None, Type::unit())
                     }
                 };
@@ -877,7 +968,8 @@ impl Tcx {
             }
             ast::ExprKind::While { cond, body } => {
                 let cond = self.check_expr(cond)?;
-                self.ty_equiv(Type::bool(), cond.ty, cond.span)?;
+                self.push_equational_constraint(Type::bool(), cond.ty, cond.span);
+                // self.ty_equiv(Type::bool(), cond.ty, cond.span)?;
                 self.num_loops += 1;
                 let body = self.check_expr(body)?;
                 self.num_loops -= 1;
@@ -918,7 +1010,8 @@ impl Tcx {
                     .map(|(name, ty)| (self.pop_var(*name), *ty))
                     .collect_vec();
 
-                self.ty_equiv(*ret_ty, body.ty, body.span)?;
+                self.push_equational_constraint(*ret_ty, body.ty, body.span);
+                // self.ty_equiv(*ret_ty, body.ty, body.span)?;
                 let func_ty = Type::func(new_params.iter().map(|(_, ty)| *ty).collect(), *ret_ty);
                 (
                     tir::ExprKind::Lambda {
@@ -933,7 +1026,8 @@ impl Tcx {
             ast::ExprKind::Assign { dst, src } => {
                 let src = self.check_expr(src)?;
                 let dst = self.check_expr(dst)?;
-                self.ty_equiv(src.ty, dst.ty, dst.span)?;
+                self.push_equational_constraint(src.ty, dst.ty, dst.span);
+                // self.ty_equiv(src.ty, dst.ty, dst.span)?;
 
                 (
                     tir::ExprKind::Assign {
@@ -960,19 +1054,28 @@ impl Tcx {
 
                 let tys = exprs.iter().map(|e| e.ty).collect::<Vec<_>>();
 
-                let all_same = tys
-                    .first()
-                    .map(|first| tys.iter().all(|x| x.equiv(first)))
-                    .unwrap_or(true);
+                // let all_same = tys
+                //     .first()
+                //     .map(|first| tys.iter().all(|x| x.equiv(first)))
+                //     .unwrap_or(true);
 
                 let internal_type = *tys.first().unwrap();
-                ensure!(
-                    all_same,
-                    TypeError::NonHomogenousArray {
-                        span: exprs.first().unwrap().span,
-                        first_type: internal_type
-                    }
-                );
+                for ty in &tys[..] {
+                    self.push_equational_constraint(internal_type, *ty, expr.span);
+                }
+
+                // let all_same = tys
+                //     .first()
+                //     .map(|first| tys.iter().all(|x| x.equiv(first)))
+                //     .unwrap_or(true);
+
+                // ensure!(
+                //     all_same,
+                //     TypeError::NonHomogenousArray {
+                //         span: exprs.first().unwrap().span,
+                //         first_type: internal_type
+                //     }
+                // );
 
                 (
                     tir::ExprKind::ArrayLiteral(exprs),
@@ -989,7 +1092,8 @@ impl Tcx {
                     }),
                 };
                 let index = self.check_expr(index)?;
-                self.ty_equiv(Type::int(), index.ty, index.span)?;
+                self.push_equational_constraint(Type::int(), index.ty, index.span);
+                // self.ty_equiv(Type::int(), index.ty, index.span)?;
                 (
                     tir::ExprKind::ArrayIndex {
                         array: Box::new(array),
@@ -1002,7 +1106,8 @@ impl Tcx {
                 let value = self.check_expr(value)?;
                 let internal_type = value.ty;
                 let count = self.check_expr(count)?;
-                self.ty_equiv(Type::int(), count.ty, count.span)?;
+                self.push_equational_constraint(Type::int(), count.ty, count.span);
+                // self.ty_equiv(Type::int(), count.ty, count.span)?;
                 (
                     tir::ExprKind::ArrayCopy {
                         value: Box::new(value),
