@@ -189,13 +189,46 @@ impl TypeUnifier {
             return true;
         }
 
-        // given from line 44, not ==
+        // Handle tuple unification specially
+        if let (TypeKind::Tuple(items1), TypeKind::Tuple(items2)) = (root1.kind(), root2.kind()) {
+            if items1.len() != items2.len() {
+                return false;
+            }
+
+            // Check if each pairwise element can be unified
+            for (item1, item2) in items1.iter().zip(items2.iter()) {
+                if !self.union(*item1, *item2) {
+                    return false;
+                }
+            }
+
+            // Choose the more constrained tuple as root (more concrete types)
+            let root1_concrete_count = items1
+                .iter()
+                .filter(|t| !matches!(t.kind(), TypeKind::Hole(_)))
+                .count();
+            let root2_concrete_count = items2
+                .iter()
+                .filter(|t| !matches!(t.kind(), TypeKind::Hole(_)))
+                .count();
+
+            if root1_concrete_count >= root2_concrete_count {
+                self.parents.insert(root2, root1);
+            } else {
+                self.parents.insert(root1, root2);
+            }
+            return true;
+        }
+
+        // If both are concrete types (not holes), they must be equal to unify
         if !matches!(root1.kind(), TypeKind::Hole(_)) && !matches!(root2.kind(), TypeKind::Hole(_))
         {
-            return false;
+            return root1.equiv(root2.kind());
         } else if !matches!(root1.kind(), TypeKind::Hole(_)) {
+            // root1 is concrete, root2 is hole - unify hole to concrete
             self.parents.insert(root2, root1);
         } else {
+            // root1 is hole, root2 is concrete - unify hole to concrete
             self.parents.insert(root1, root2);
         }
         return true;
@@ -239,52 +272,85 @@ impl TypeUnifier {
         Ok(())
     }
     fn solve_projection_constraints(&mut self) -> Result<()> {
-        let constraints = std::mem::take(&mut self.projection_constraints);
-        for (ty1, ty2, i, span) in constraints {
-            // Find the representative of ty2 after equational constraint solving
-            let ty2_rep = self.find(ty2);
+        loop {
+            let constraints = std::mem::take(&mut self.projection_constraints);
+            if constraints.is_empty() {
+                break;
+            }
 
-            match ty2_rep.kind() {
-                TypeKind::Tuple(items) => match items.get(i) {
-                    Some(elem_type) => {
-                        // println!("ty1: {:?}, elem_type: {:?}", ty1, elem_type);
-                        // println!(
-                        //     "ty1parent: {:?}, elem_typeparent: {:?}",
-                        //     self.find(ty1),
-                        //     self.find(*elem_type)
-                        // );
-                        ensure!(
-                            self.union(ty1, *elem_type),
-                            TypeError::InvalidProjectionType {
-                                span: span,
-                                ty: ty1
-                            }
-                        );
+            let mut progress_made = false;
+            let mut remaining_constraints = Vec::new();
+
+            for (ty1, ty2, i, span) in constraints {
+                // Find the representative of ty2 after equational constraint solving
+                let ty2_rep = self.find(ty2);
+
+                match ty2_rep.kind() {
+                    TypeKind::Tuple(items) => match items.get(i) {
+                        Some(elem_type) => {
+                            ensure!(
+                                self.union(ty1, *elem_type),
+                                TypeError::InvalidProjectionType {
+                                    span: span,
+                                    ty: ty1
+                                }
+                            );
+                            progress_made = true;
+
+                            // After unifying the element, try to unify the tuple with a more concrete version
+                            self.try_unify_tuple_progressively(ty2_rep);
+                        }
+                        None => bail!(TypeError::InvalidProjectionIndex {
+                            index: i,
+                            span: span
+                        }),
+                    },
+                    TypeKind::Hole(_) => {
+                        // If ty2 is still a hole, we can't solve this constraint yet
+                        // Put it back for the next iteration
+                        remaining_constraints.push((ty1, ty2, i, span));
                     }
-                    None => bail!(TypeError::InvalidProjectionIndex {
-                        index: i,
-                        span: span
-                    }),
-                },
-                TypeKind::Hole(_) => {
-                    // If ty2 is still a hole, we can't solve this constraint yet
-                    // This means the type is under-constrained
-                    bail!(TypeError::InvalidProjectionType {
-                        ty: ty2_rep,
-                        span: span
-                    });
+                    _ => ensure!(
+                        false,
+                        TypeError::InvalidProjectionType {
+                            ty: ty2_rep,
+                            span: span
+                        }
+                    ),
                 }
-                _ => ensure!(
-                    false,
-                    TypeError::InvalidProjectionType {
-                        ty: ty2_rep,
-                        span: span
-                    }
-                ),
+            }
+
+            self.projection_constraints = remaining_constraints;
+
+            if !progress_made {
+                break;
             }
         }
         Ok(())
     }
+
+    fn try_unify_tuple_progressively(&mut self, tuple_ty: Type) {
+        if let TypeKind::Tuple(items) = tuple_ty.kind() {
+            // Check if any elements have been resolved to concrete types
+            let mut has_concrete = false;
+            let mut resolved_items = Vec::new();
+
+            for item in items {
+                let resolved_item = self.find(*item);
+                if !matches!(resolved_item.kind(), TypeKind::Hole(_)) {
+                    has_concrete = true;
+                }
+                resolved_items.push(resolved_item);
+            }
+
+            // If we have any concrete types, create a more constrained tuple and unify
+            if has_concrete {
+                let more_concrete_tuple = Type::tuple(resolved_items);
+                self.union(tuple_ty, more_concrete_tuple);
+            }
+        }
+    }
+
     fn solve_castable_constraints(&mut self) -> Result<()> {
         let constraints = std::mem::take(&mut self.castable_constraints);
         for (ty1, ty2, span) in constraints {
@@ -506,22 +572,32 @@ impl Tcx {
 
         self.type_unifier.solve_constraints()?;
 
+        // for (k, v) in &self.type_unifier.parents {
+        //     println!("parent key: {:?}, value: {:?}", k, v);
+        // }
+
         self.globals.funcs.retain(|_, tds| !tds.is_empty());
 
         let mut s = self.type_unifier.subst_func();
 
+        for (_, tds) in &mut self.globals.funcs {
+            for td in tds {
+                td.ty = td.ty.subst(&mut s);
+            }
+        }
+
         for f in &mut tir_prog {
             for (_, ty) in &mut f.params {
                 *ty = ty.subst(&mut s);
-                println!("{}", ty);
+                // println!("{}", ty);
             }
             f.ret_ty = f.ret_ty.subst(&mut s);
-            println!("{}", f.ret_ty);
-            f.body.ty = f.body.ty.subst(&mut s);
-            println!("{}", f.body.ty);
+            // println!("{}", f.ret_ty);
+            f.body = f.body.clone().subst(&mut s);
+            // println!("{}", f.body.ty);
         }
 
-        println!("{:?}", tir_prog);
+        // println!("{:?}", tir_prog);
 
         let prog = tir::Program::new(tir_prog);
 
