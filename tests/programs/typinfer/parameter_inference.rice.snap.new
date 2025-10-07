@@ -3,11 +3,12 @@ source: tests/snapshots.rs
 assertion_line: 54
 expression: output
 ---
-success = false
-stdout = ''
-stderr = '''
-
-thread 'main' panicked at src/rt/mod.rs:794:26:
-not implemented: Add Type(Hole(0))
-note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+success = true
+stdout = '''
+6
+ABC
+10
+20
+30
 '''
+stderr = ''

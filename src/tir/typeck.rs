@@ -260,14 +260,27 @@ impl TypeUnifier {
     fn solve_equational_constraints(&mut self) -> Result<()> {
         let constraints = std::mem::take(&mut self.equational_constraints);
         for (ty1, ty2, span) in constraints {
-            ensure!(
-                self.union(ty1, ty2),
+            // println!(
+            //     "PREUNION: ty1: {:?}, root1: {:?}, ty2: {:?}, root2: {:?}",
+            //     ty1,
+            //     self.find(ty1),
+            //     ty2,
+            //     self.find(ty2)
+            // );
+            ensure!(self.union(ty1, ty2), {
                 TypeError::TypeMismatch {
                     expected: ty1,
                     actual: ty2,
-                    span: span
+                    span: span,
                 }
-            );
+            });
+            // println!(
+            //     "POSTUNION: ty1: {:?}, root1: {:?}, ty2: {:?}, root2: {:?}",
+            //     ty1,
+            //     self.find(ty1),
+            //     ty2,
+            //     self.find(ty2)
+            // );
         }
         Ok(())
     }
@@ -1250,8 +1263,14 @@ impl Tcx {
             }
             ast::ExprKind::ArrayIndex { array, index } => {
                 let array = self.check_expr(array)?;
+
                 let internal_type = match array.ty.kind() {
                     TypeKind::Array(ty) => ty,
+                    TypeKind::Hole(_) => {
+                        let next_hole_id = self.find_next_hole_id();
+                        &Type::hole(next_hole_id) //if we're indexing off of a hole, we need a new hole type
+                        // ?y = ?x[i]
+                    }
                     _ => bail!(TypeError::IndexIntoNonArray {
                         span: array.span,
                         ty: array.ty
