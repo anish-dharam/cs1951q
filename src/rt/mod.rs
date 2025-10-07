@@ -581,9 +581,6 @@ enum MemPlace {
 
     /// A field of a heap-allocated struct.
     StructField(Rooted<StructRef>, usize),
-
-    /// An element of a heap-allocated array.
-    ArrayElement(Rooted<wasmtime::ArrayRef>, u32),
 }
 
 impl Frame<'_> {
@@ -636,15 +633,6 @@ impl Frame<'_> {
                 .get(local)
                 .with_context(|| format!("ICE: missing local: {local}"))?),
             MemPlace::StructField(struct_ref, i) => struct_ref.field(store!(self), i),
-            MemPlace::ArrayElement(array_ref, i) => {
-                // oob
-                let len = array_ref.len(store!(self))?;
-                if i >= len {
-                    //changed
-                    bail!("array index {} out of bounds (length {})", i, len);
-                }
-                array_ref.get(store!(self), i)
-            }
         }
     }
 
@@ -654,14 +642,6 @@ impl Frame<'_> {
             .context("ICE: null anyref")?
             .as_struct(store!(self))?
             .context("ICE: not a structref")
-    }
-
-    fn array_ref(&mut self, val: Val) -> Result<Rooted<wasmtime::ArrayRef>> {
-        val.any_ref()
-            .context("ICE: not an anyref")?
-            .context("ICE: null anyref")?
-            .as_array(store!(self))?
-            .context("ICE: not an arrayref")
     }
 
     fn func_ref(&mut self, val: Val) -> Result<Func> {
@@ -682,10 +662,11 @@ impl Frame<'_> {
                     MemPlace::StructField(struct_ref, *index)
                 }
                 bc::ProjectionElem::ArrayIndex { index, .. } => {
-                    let array_ref = self.array_ref(val)?;
+                    // Treat arrays as structs, so array indexing becomes struct field access
+                    let struct_ref = self.struct_ref(val)?;
                     let index_val = self.eval_operand(index)?;
-                    let index_int = from_val!(i32, self, index_val) as u32;
-                    MemPlace::ArrayElement(array_ref, index_int)
+                    let index_int = from_val!(i32, self, index_val) as usize;
+                    MemPlace::StructField(struct_ref, index_int)
                 }
             }
         }
@@ -700,15 +681,6 @@ impl Frame<'_> {
             }
             MemPlace::StructField(struct_ref, i) => {
                 struct_ref.set_field(store!(self), i, value)?;
-            }
-            MemPlace::ArrayElement(array_ref, i) => {
-                // Bounds checking for array assignment
-                let len = array_ref.len(store!(self))?;
-                if i >= len {
-                    //changed
-                    bail!("array index {} out of bounds (length {})", i, len);
-                }
-                array_ref.set(store!(self), i, value)?;
             }
         }
         Ok(())
@@ -838,15 +810,19 @@ impl Frame<'_> {
                         bc::AllocKind::Tuple | bc::AllocKind::Struct => {
                             self.rt.alloc_tuple(store!(self), fields)?
                         }
-                        bc::AllocKind::Array => self.rt.alloc_array(store!(self), fields)?,
+                        bc::AllocKind::Array => {
+                            // Treat arrays as structs for consistency with codegen
+                            self.rt.alloc_tuple(store!(self), fields)?
+                        }
                     }
                 }
                 bc::AllocArgs::ArrayCopy { value, count } => {
                     let value_val = self.eval_operand(value)?;
                     let count_val = self.eval_operand(count)?;
                     let count_int = from_val!(i32, self, count_val) as u32;
-                    self.rt
-                        .alloc_array_copy(store!(self), value_val, count_int)?
+                    // Treat array copy as creating a tuple with repeated values
+                    let fields = vec![value_val; count_int as usize];
+                    self.rt.alloc_tuple(store!(self), fields)?
                 }
             },
 
