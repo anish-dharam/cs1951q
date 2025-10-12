@@ -317,8 +317,8 @@ impl Runtime {
                 bc::TypeKind::Tuple(..)
                 | bc::TypeKind::Func { .. }
                 | bc::TypeKind::Struct(..)
-                | bc::TypeKind::Interface(..)
-                | bc::TypeKind::Array(..) => REFSTRUCT.clone(),
+                | bc::TypeKind::Interface(..) => REFSTRUCT.clone(),
+                bc::TypeKind::Array(_) => ValType::Ref(RefType::new(true, HeapType::Array)),
                 bc::TypeKind::Hole(_) | bc::TypeKind::Self_ => unreachable!(),
             }
         }
@@ -404,8 +404,12 @@ impl Runtime {
                 if any_ref.is_struct(&store).expect("reference unrooted") {
                     REFSTRUCT.clone()
                 } else if any_ref.is_array(&store).expect("reference unrooted") {
-                    ValType::ARRAYREF
-                    // REFSTRUCT.clone()
+                    let array_ref = any_ref
+                        .as_array(&store)
+                        .expect("reference is array")
+                        .expect("array ref");
+                    let array_type = array_ref.ty(&store).expect("array type");
+                    ValType::Ref(RefType::new(true, HeapType::ConcreteArray(array_type)))
                 } else {
                     unreachable!()
                 }
@@ -581,6 +585,9 @@ enum MemPlace {
 
     /// A field of a heap-allocated struct.
     StructField(Rooted<StructRef>, usize),
+
+    /// An element of a heap-allocated array.
+    ArrayElement(Rooted<wasmtime::ArrayRef>, u32),
 }
 
 impl Frame<'_> {
@@ -633,6 +640,15 @@ impl Frame<'_> {
                 .get(local)
                 .with_context(|| format!("ICE: missing local: {local}"))?),
             MemPlace::StructField(struct_ref, i) => struct_ref.field(store!(self), i),
+            MemPlace::ArrayElement(array_ref, i) => {
+                // oob
+                let len = array_ref.len(store!(self))?;
+                if i >= len {
+                    //changed
+                    bail!("array index {} out of bounds (length {})", i, len);
+                }
+                array_ref.get(store!(self), i)
+            }
         }
     }
 
@@ -642,6 +658,14 @@ impl Frame<'_> {
             .context("ICE: null anyref")?
             .as_struct(store!(self))?
             .context("ICE: not a structref")
+    }
+
+    fn array_ref(&mut self, val: Val) -> Result<Rooted<wasmtime::ArrayRef>> {
+        val.any_ref()
+            .context("ICE: not an anyref")?
+            .context("ICE: null anyref")?
+            .as_array(store!(self))?
+            .context("ICE: not an arrayref")
     }
 
     fn func_ref(&mut self, val: Val) -> Result<Func> {
@@ -662,11 +686,10 @@ impl Frame<'_> {
                     MemPlace::StructField(struct_ref, *index)
                 }
                 bc::ProjectionElem::ArrayIndex { index, .. } => {
-                    // Treat arrays as structs, so array indexing becomes struct field access
-                    let struct_ref = self.struct_ref(val)?;
+                    let array_ref = self.array_ref(val)?;
                     let index_val = self.eval_operand(index)?;
-                    let index_int = from_val!(i32, self, index_val) as usize;
-                    MemPlace::StructField(struct_ref, index_int)
+                    let index_int = from_val!(i32, self, index_val) as u32;
+                    MemPlace::ArrayElement(array_ref, index_int)
                 }
             }
         }
@@ -681,6 +704,15 @@ impl Frame<'_> {
             }
             MemPlace::StructField(struct_ref, i) => {
                 struct_ref.set_field(store!(self), i, value)?;
+            }
+            MemPlace::ArrayElement(array_ref, i) => {
+                // Bounds checking for array assignment
+                let len = array_ref.len(store!(self))?;
+                if i >= len {
+                    //changed
+                    bail!("array index {} out of bounds (length {})", i, len);
+                }
+                array_ref.set(store!(self), i, value)?;
             }
         }
         Ok(())
@@ -810,19 +842,15 @@ impl Frame<'_> {
                         bc::AllocKind::Tuple | bc::AllocKind::Struct => {
                             self.rt.alloc_tuple(store!(self), fields)?
                         }
-                        bc::AllocKind::Array => {
-                            // Treat arrays as structs for consistency with codegen
-                            self.rt.alloc_tuple(store!(self), fields)?
-                        }
+                        bc::AllocKind::Array => self.rt.alloc_array(store!(self), fields)?,
                     }
                 }
                 bc::AllocArgs::ArrayCopy { value, count } => {
                     let value_val = self.eval_operand(value)?;
                     let count_val = self.eval_operand(count)?;
                     let count_int = from_val!(i32, self, count_val) as u32;
-                    // Treat array copy as creating a tuple with repeated values
-                    let fields = vec![value_val; count_int as usize];
-                    self.rt.alloc_tuple(store!(self), fields)?
+                    self.rt
+                        .alloc_array_copy(store!(self), value_val, count_int)?
                 }
             },
 

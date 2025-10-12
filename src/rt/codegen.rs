@@ -174,6 +174,13 @@ impl CodegenModule<'_> {
                         let idx = self.wasm_struct_ty_idx(StructType { fields });
                         HeapType::Concrete(idx)
                     }
+                    wasmtime::HeapType::ConcreteArray(ty) => {
+                        let element_ty = self.convert_wasmtime_ty(
+                            ty.field_type().element_type().unwrap_val_type().clone(),
+                        );
+                        let idx = self.array_ty_idx(element_ty);
+                        HeapType::Concrete(idx)
+                    }
                     _ => unimplemented!("{ref_ty:#?}"),
                 },
             }),
@@ -368,9 +375,12 @@ impl CodegenModule<'_> {
                 })
             }
             bc::TypeKind::Array(element_ty) => {
-                // For runtime consistency, treat arrays as generic struct references
-                // rather than concrete array types to avoid type mismatches
-                REFSTRUCT
+                let element_val_ty = self.gen_ty(*element_ty);
+                let idx = self.array_ty_idx(element_val_ty);
+                ValType::Ref(RefType {
+                    heap_type: HeapType::Concrete(idx),
+                    nullable: true,
+                })
             }
             bc::TypeKind::Self_ => REFSTRUCT,
             bc::TypeKind::Hole(_) => unreachable!(),
@@ -437,10 +447,9 @@ impl CodegenFunc<'_, '_> {
                     }
                     bc::ProjectionElem::ArrayIndex { index, ty } => {
                         self.gen_operand(index, instrs);
-                        // Since we're treating arrays as structs, we need to use struct operations
-                        // For now, assume arrays are stored as structs with fields at indices
-                        let struct_ty_idx = self.module.tuple_ty_idx(*ty);
-                        instrs.struct_get(struct_ty_idx, 0); // Assuming first field contains the array data
+                        let element_ty = self.module.gen_ty(*ty);
+                        let array_ty_idx = self.module.array_ty_idx(element_ty);
+                        instrs.array_get(array_ty_idx);
                     }
                 }
             }
@@ -453,9 +462,9 @@ impl CodegenFunc<'_, '_> {
                 bc::ProjectionElem::ArrayIndex { index, ty } => {
                     self.gen_operand(index, instrs);
                     self.gen_rvalue(&stmt.rvalue, stmt.place.ty, instrs);
-                    // Since we're treating arrays as structs, we need to use struct operations
-                    let struct_ty_idx = self.module.tuple_ty_idx(*ty);
-                    instrs.struct_set(struct_ty_idx, 0); // Assuming first field contains the array data
+                    let element_ty = self.module.gen_ty(*ty);
+                    let array_ty_idx = self.module.array_ty_idx(element_ty);
+                    instrs.array_set(array_ty_idx);
                 }
             }
         }
@@ -577,9 +586,12 @@ impl CodegenFunc<'_, '_> {
                                 instrs.struct_new(ty_idx);
                             }
                             bc::AllocKind::Array => {
-                                // Since we're treating arrays as structs, create a struct instead
-                                let ty_idx = self.module.tuple_ty_idx(ty);
-                                instrs.struct_new(ty_idx);
+                                let bc::TypeKind::Array(element_ty) = ty.kind() else {
+                                    panic!("{ty:?} is not an array")
+                                };
+                                let element_val_ty = self.module.gen_ty(*element_ty);
+                                let ty_idx = self.module.array_ty_idx(element_val_ty);
+                                instrs.array_new_fixed(ty_idx, ops.len() as u32);
                             }
                         },
                     }
@@ -587,9 +599,12 @@ impl CodegenFunc<'_, '_> {
                 bc::AllocArgs::ArrayCopy { value, count } => {
                     self.gen_operand(value, instrs);
                     self.gen_operand(count, instrs);
-                    // Since we're treating arrays as structs, create a struct instead
-                    let ty_idx = self.module.tuple_ty_idx(ty);
-                    instrs.struct_new(ty_idx);
+                    let bc::TypeKind::Array(element_ty) = ty.kind() else {
+                        panic!("{ty:?} is not an array")
+                    };
+                    let element_val_ty = self.module.gen_ty(*element_ty);
+                    let ty_idx = self.module.array_ty_idx(element_val_ty);
+                    instrs.array_new(ty_idx);
                 }
             },
 
@@ -656,11 +671,10 @@ impl CodegenFunc<'_, '_> {
                     instrs.struct_get(self.module.tuple_ty_idx(*ty), *index as u32);
                 }
                 bc::ProjectionElem::ArrayIndex { index, ty } => {
-                    println!("element_ty: {:?}", ty);
                     self.gen_operand(index, instrs);
-                    // Since we're treating arrays as structs, use struct operations
-                    let struct_ty_idx = self.module.tuple_ty_idx(*ty);
-                    instrs.struct_get(struct_ty_idx, 0); // Assuming first field contains the array data
+                    let element_ty = self.module.gen_ty(*ty);
+                    let array_ty_idx = self.module.array_ty_idx(element_ty);
+                    instrs.array_get(array_ty_idx);
                 }
             }
         }
