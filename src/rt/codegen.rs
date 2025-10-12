@@ -174,6 +174,13 @@ impl CodegenModule<'_> {
                         let idx = self.wasm_struct_ty_idx(StructType { fields });
                         HeapType::Concrete(idx)
                     }
+                    wasmtime::HeapType::ConcreteArray(ty) => {
+                        let element_ty = self.convert_wasmtime_ty(
+                            ty.field_type().element_type().unwrap_val_type().clone(),
+                        );
+                        let idx = self.array_ty_idx(element_ty);
+                        HeapType::Concrete(idx)
+                    }
                     _ => unimplemented!("{ref_ty:#?}"),
                 },
             }),

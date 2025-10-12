@@ -141,13 +141,12 @@ pub enum TypeError {
         span: Span,
     },
 
-    #[error("all elements in array must have type {first_type}")]
-    NonHomogenousArray {
-        #[label]
-        span: Span,
-        first_type: Type,
-    },
-
+    // #[error("all elements in array must have type {first_type}")]
+    // NonHomogenousArray {
+    //     #[label]
+    //     span: Span,
+    //     first_type: Type,
+    // },
     #[error("tried to index into a {ty} as if it were an array")]
     IndexIntoNonArray {
         #[label]
@@ -433,6 +432,7 @@ pub enum TypeConstraint {
 
 impl TypeConstraint {
     /// Returns an error if `ty` does not satisfy the constraint `self`.
+    #[allow(unused)]
     pub fn satisfied_by(self, ty: Type, span: Span, globals: &Globals) -> Result<()> {
         match self {
             TypeConstraint::Numeric => {
@@ -768,6 +768,7 @@ impl Tcx {
         Ok(())
     }
 
+    #[allow(unused)]
     fn ty_constraint(&mut self, constraint: TypeConstraint, ty: Type, span: Span) -> Result<()> {
         constraint.satisfied_by(ty, span, &self.globals)
     }

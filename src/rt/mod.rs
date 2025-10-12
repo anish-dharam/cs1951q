@@ -317,8 +317,8 @@ impl Runtime {
                 bc::TypeKind::Tuple(..)
                 | bc::TypeKind::Func { .. }
                 | bc::TypeKind::Struct(..)
-                | bc::TypeKind::Interface(..)
-                | bc::TypeKind::Array(..) => REFSTRUCT.clone(),
+                | bc::TypeKind::Interface(..) => REFSTRUCT.clone(),
+                bc::TypeKind::Array(..) => ValType::Ref(RefType::new(true, HeapType::Array)),
                 bc::TypeKind::Hole(_) | bc::TypeKind::Self_ => unreachable!(),
             }
         }
@@ -404,7 +404,12 @@ impl Runtime {
                 if any_ref.is_struct(&store).expect("reference unrooted") {
                     REFSTRUCT.clone()
                 } else if any_ref.is_array(&store).expect("reference unrooted") {
-                    ValType::ARRAYREF
+                    let array_ref = any_ref
+                        .as_array(&store)
+                        .expect("reference is array")
+                        .expect("array ref");
+                    let array_type = array_ref.ty(&store).expect("array type");
+                    ValType::Ref(RefType::new(true, HeapType::ConcreteArray(array_type)))
                     // REFSTRUCT.clone()
                 } else {
                     unreachable!()

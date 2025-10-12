@@ -7,7 +7,7 @@ success = false
 stdout = ''
 stderr = '''
 
-thread 'main' panicked at src/rt/mod.rs:522:56:
+thread 'main' panicked at src/rt/mod.rs:527:56:
 no entry found for key
 note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
 '''
