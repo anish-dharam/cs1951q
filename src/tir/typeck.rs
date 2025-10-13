@@ -218,7 +218,7 @@ impl TypeUnifier {
             }
             (TypeKind::Array(elem1), TypeKind::Array(elem2)) => {
                 // Unify the element types
-                println!("Unifying arrays: {:?} and {:?}", elem1, elem2);
+                // println!("Unifying arrays: {:?} and {:?}", elem1, elem2);
                 if !self.union(*elem1, *elem2) {
                     return false;
                 }
@@ -226,6 +226,7 @@ impl TypeUnifier {
                 let internal_root = self.find(*elem1);
                 assert_eq!(internal_root, self.find(*elem2));
 
+                // Create the unified array type with the resolved element type
                 let unified_array = Type::array(internal_root);
                 self.initialize_type(unified_array);
 
@@ -479,9 +480,11 @@ pub struct Tcx {
 #[derive(Clone, Copy, Debug)]
 pub enum TypeConstraint {
     /// Type must be either int or float.
+    #[allow(unused)]
     Numeric,
 
     /// Type must be castable to the given type.
+    #[allow(unused)]
     CastableTo(Type),
 }
 
@@ -594,38 +597,54 @@ impl Tcx {
         // Find the maximum hole ID currently in use and return the next one
         let mut max_hole_id = 0;
 
-        // Check all types in the parents map
-        for ty in self.type_unifier.parents.keys() {
-            if let TypeKind::Hole(id) = ty.kind() {
-                max_hole_id = max_hole_id.max(*id);
+        fn find_max_hole_in_type(ty: Type, max_id: &mut usize) {
+            match ty.kind() {
+                TypeKind::Hole(id) => {
+                    *max_id = (*max_id).max(*id);
+                }
+                TypeKind::Array(elem_ty) => {
+                    find_max_hole_in_type(*elem_ty, max_id);
+                }
+                TypeKind::Tuple(tys) => {
+                    for t in tys {
+                        find_max_hole_in_type(*t, max_id);
+                    }
+                }
+                TypeKind::Func { inputs, output } => {
+                    for t in inputs {
+                        find_max_hole_in_type(*t, max_id);
+                    }
+                    find_max_hole_in_type(*output, max_id);
+                }
+                _ => {}
             }
         }
 
-        // Also check all types in constraints
+        // all types in the parents map
+        for ty in self.type_unifier.parents.keys() {
+            find_max_hole_in_type(*ty, &mut max_hole_id);
+        }
+
+        // check all types in constraints
         for (ty1, ty2, _) in &self.type_unifier.equational_constraints {
-            if let TypeKind::Hole(id) = ty1.kind() {
-                max_hole_id = max_hole_id.max(*id);
-            }
-            if let TypeKind::Hole(id) = ty2.kind() {
-                max_hole_id = max_hole_id.max(*id);
-            }
+            find_max_hole_in_type(*ty1, &mut max_hole_id);
+            find_max_hole_in_type(*ty2, &mut max_hole_id);
         }
 
         for (ty1, ty2, _, _) in &self.type_unifier.projection_constraints {
-            if let TypeKind::Hole(id) = ty1.kind() {
-                max_hole_id = max_hole_id.max(*id);
-            }
-            if let TypeKind::Hole(id) = ty2.kind() {
-                max_hole_id = max_hole_id.max(*id);
-            }
+            find_max_hole_in_type(*ty1, &mut max_hole_id);
+            find_max_hole_in_type(*ty2, &mut max_hole_id);
         }
 
         for (ty1, ty2, _) in &self.type_unifier.castable_constraints {
-            if let TypeKind::Hole(id) = ty1.kind() {
-                max_hole_id = max_hole_id.max(*id);
-            }
-            if let TypeKind::Hole(id) = ty2.kind() {
-                max_hole_id = max_hole_id.max(*id);
+            find_max_hole_in_type(*ty1, &mut max_hole_id);
+            find_max_hole_in_type(*ty2, &mut max_hole_id);
+        }
+
+        // check function parameters and globals
+        for tds in self.globals.funcs.values() {
+            for td in tds {
+                find_max_hole_in_type(td.ty, &mut max_hole_id);
             }
         }
 
@@ -638,13 +657,13 @@ impl Tcx {
             self.check_item(&mut tir_prog, item)?;
         }
 
-        for (ty1, ty2, span) in &self.type_unifier.equational_constraints {
-            println!("equational constraint: {:?}, {:?}, {:?}", ty1, ty2, span);
-        }
+        // for (ty1, ty2, span) in &self.type_unifier.equational_constraints {
+        //     println!("equational constraint: {:?}, {:?}, {:?}", ty1, ty2, span);
+        // }
 
-        for (k, v) in &self.type_unifier.parents {
-            println!("parent key: {:?}, value: {:?}", k, v);
-        }
+        // for (k, v) in &self.type_unifier.parents {
+        //     println!("parent key: {:?}, value: {:?}", k, v);
+        // }
 
         self.type_unifier.solve_constraints(&self.globals)?;
 
@@ -1339,7 +1358,7 @@ impl Tcx {
                         // Add constraint that the array hole must be an array of the element hole type
                         // ?x = [?y] where ?x is the array hole and ?y is the element hole
                         let array_hole = Type::array(element_hole);
-                        self.push_equational_constraint(array_hole, array.ty, array.span);
+                        self.push_equational_constraint(array.ty, array_hole, array.span);
 
                         element_hole
                     }

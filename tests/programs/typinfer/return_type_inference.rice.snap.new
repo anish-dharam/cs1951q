@@ -3,15 +3,11 @@ source: tests/snapshots.rs
 assertion_line: 54
 expression: output
 ---
-success = false
-stdout = ''
-stderr = '''
-Error:   × cannot project from type ?2
-    ╭─[return_type_inference.rice:24:27]
- 23 │     println(str);
- 24 │     println(int_to_string(tup.0));
-    ·                           ───
- 25 │     println(int_to_string(arr[0]))
-    ╰────
-
+success = true
+stdout = '''
+42
+Hello World
+1
+1
 '''
+stderr = ''

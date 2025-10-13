@@ -1,10 +1,10 @@
 ---
 source: tests/snapshots.rs
-assertion_line: 54
 expression: output
 ---
 success = true
 stdout = '''
-0
+22
+9
 '''
 stderr = ''

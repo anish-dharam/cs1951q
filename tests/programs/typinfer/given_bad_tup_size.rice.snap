@@ -1,15 +1,14 @@
 ---
 source: tests/snapshots.rs
-assertion_line: 54
 expression: output
 ---
 success = false
 stdout = ''
 stderr = '''
 Error:   × cannot project from type ?0
-   ╭─[given_bad_tup_size.rice:1:21]
+   ╭─[given_bad_tup_size.rice:1:19]
  1 │ fn foo(x: _) -> _ { x.0 }
-   ·                     ─
+   ·                   ───────
    ╰────
 
 '''
