@@ -1,0 +1,18 @@
+---
+source: tests/snapshots.rs
+assertion_line: 54
+expression: output
+---
+success = false
+stdout = ''
+stderr = '''
+Error:   × parse error
+   ╭─[mixed_types_inference.rice:5:19]
+ 4 │     while i < 3 {
+ 5 │         if data[i].0 > 0 {
+   ·                   ┬
+   ·                   ╰── unrecognized token, expected: "!=" or "%" or "&&" or "*" or "**" or "+" or "-" or "/" or ":=" or ";" or "<" or "<<" or "<=" or "==" or ">" or ">=" or ">>" or "[" or "^" or "as" or "{" or "|" or "||"
+ 6 │             result := result + data[i].1
+   ╰────
+
+'''

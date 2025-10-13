@@ -180,57 +180,76 @@ impl TypeUnifier {
     }
 
     fn union(&mut self, ty1: Type, ty2: Type) -> bool {
-        self.initialize_type(ty1);
-        self.initialize_type(ty2);
         let root1 = self.find(ty1);
         let root2 = self.find(ty2);
         if root1 == root2 {
             return true;
         }
 
-        // Handle tuple unification specially
-        if let (TypeKind::Tuple(items1), TypeKind::Tuple(items2)) = (root1.kind(), root2.kind()) {
-            if items1.len() != items2.len() {
-                return false;
-            }
-
-            // Check if each pairwise element can be unified
-            for (item1, item2) in items1.iter().zip(items2.iter()) {
-                if !self.union(*item1, *item2) {
+        match (root1.kind(), root2.kind()) {
+            (TypeKind::Tuple(items1), TypeKind::Tuple(items2)) => {
+                if items1.len() != items2.len() {
                     return false;
                 }
+
+                // Check if each pairwise element can be unified
+                for (item1, item2) in items1.iter().zip(items2.iter()) {
+                    if !self.union(*item1, *item2) {
+                        return false;
+                    }
+                }
+
+                // Choose the more constrained tuple as root (more concrete types)
+                let root1_concrete_count = items1
+                    .iter()
+                    .filter(|t| !matches!(t.kind(), TypeKind::Hole(_)))
+                    .count();
+                let root2_concrete_count = items2
+                    .iter()
+                    .filter(|t| !matches!(t.kind(), TypeKind::Hole(_)))
+                    .count();
+
+                if root1_concrete_count >= root2_concrete_count {
+                    self.parents.insert(root2, root1);
+                } else {
+                    self.parents.insert(root1, root2);
+                }
+                true
             }
+            (TypeKind::Array(elem1), TypeKind::Array(elem2)) => {
+                // Unify the element types
+                println!("Unifying arrays: {:?} and {:?}", elem1, elem2);
+                if !self.union(*elem1, *elem2) {
+                    return false;
+                }
 
-            // Choose the more constrained tuple as root (more concrete types)
-            let root1_concrete_count = items1
-                .iter()
-                .filter(|t| !matches!(t.kind(), TypeKind::Hole(_)))
-                .count();
-            let root2_concrete_count = items2
-                .iter()
-                .filter(|t| !matches!(t.kind(), TypeKind::Hole(_)))
-                .count();
+                let internal_root = self.find(*elem1);
+                assert_eq!(internal_root, self.find(*elem2));
 
-            if root1_concrete_count >= root2_concrete_count {
-                self.parents.insert(root2, root1);
-            } else {
-                self.parents.insert(root1, root2);
+                let unified_array = Type::array(internal_root);
+                self.initialize_type(unified_array);
+
+                self.parents.insert(root1, unified_array);
+                self.parents.insert(root2, unified_array);
+
+                true
             }
-            return true;
+            _ => {
+                // If both are concrete types (not holes), they must be equal to unify
+                if !matches!(root1.kind(), TypeKind::Hole(_))
+                    && !matches!(root2.kind(), TypeKind::Hole(_))
+                {
+                    return root1.equiv(root2.kind());
+                } else if !matches!(root1.kind(), TypeKind::Hole(_)) {
+                    // root1 is concrete, root2 is hole - unify hole to concrete
+                    self.parents.insert(root2, root1);
+                } else {
+                    // root1 is hole, root2 is concrete - unify hole to concrete (or both holes)
+                    self.parents.insert(root1, root2);
+                }
+                return true;
+            }
         }
-
-        // If both are concrete types (not holes), they must be equal to unify
-        if !matches!(root1.kind(), TypeKind::Hole(_)) && !matches!(root2.kind(), TypeKind::Hole(_))
-        {
-            return root1.equiv(root2.kind());
-        } else if !matches!(root1.kind(), TypeKind::Hole(_)) {
-            // root1 is concrete, root2 is hole - unify hole to concrete
-            self.parents.insert(root2, root1);
-        } else {
-            // root1 is hole, root2 is concrete - unify hole to concrete
-            self.parents.insert(root1, root2);
-        }
-        return true;
     }
 
     fn find(&mut self, ty: Type) -> Type {
@@ -249,10 +268,10 @@ impl TypeUnifier {
         res
     }
 
-    fn solve_constraints(&mut self) -> Result<()> {
+    fn solve_constraints(&mut self, globals: &Globals) -> Result<()> {
         self.solve_equational_constraints()?;
         self.solve_projection_constraints()?;
-        self.solve_castable_constraints()?;
+        self.solve_castable_constraints(globals)?;
         Ok(())
     }
 
@@ -338,6 +357,18 @@ impl TypeUnifier {
                 break;
             }
         }
+
+        // Check if there are any remaining unsolved projection constraints
+        if !self.projection_constraints.is_empty() {
+            // If there are unsolved constraints, it means we tried to project from
+            // a hole type that was never resolved to a concrete tuple/struct type
+            let (_, ty2, _, span) = self.projection_constraints[0];
+            let ty2_rep = self.find(ty2);
+            bail!(TypeError::InvalidProjectionType {
+                ty: ty2_rep,
+                span: span
+            });
+        }
         Ok(())
     }
 
@@ -363,24 +394,48 @@ impl TypeUnifier {
         }
     }
 
-    fn solve_castable_constraints(&mut self) -> Result<()> {
+    fn solve_castable_constraints(&mut self, globals: &Globals) -> Result<()> {
         let constraints = std::mem::take(&mut self.castable_constraints);
         for (ty1, ty2, span) in constraints {
-            if matches!(ty1.kind(), TypeKind::Struct(_))
-                || matches!(ty1.kind(), TypeKind::Interface(_))
-                || matches!(ty2.kind(), TypeKind::Struct(_))
-                || matches!(ty2.kind(), TypeKind::Interface(_))
-            {
-                continue;
-            }
-            ensure!(
-                *ty1.kind() == TypeKind::Int && *ty2.kind() == TypeKind::Float,
-                TypeError::InvalidCast {
-                    from: ty1,
-                    to: ty2,
-                    span,
+            match (ty1.kind(), ty2.kind()) {
+                (TypeKind::Int, TypeKind::Float) => {}
+                (TypeKind::Struct(struct_), TypeKind::Interface(intf)) => {
+                    // does struct implements interface
+                    let impl_ref = ImplRef {
+                        interface: *intf,
+                        struct_: *struct_,
+                    };
+                    ensure!(
+                        globals.impls.contains_key(&impl_ref),
+                        TypeError::MissingImpl {
+                            intf: *intf,
+                            ty: ty1,
+                            span
+                        }
+                    );
                 }
-            );
+                (TypeKind::Interface(_), TypeKind::Interface(_)) => {
+                    bail!(TypeError::InvalidCast {
+                        from: ty1,
+                        to: ty2,
+                        span,
+                    });
+                }
+                (TypeKind::Struct(_), TypeKind::Struct(_)) => {
+                    bail!(TypeError::InvalidCast {
+                        from: ty1,
+                        to: ty2,
+                        span,
+                    });
+                }
+                _ => {
+                    bail!(TypeError::InvalidCast {
+                        from: ty1,
+                        to: ty2,
+                        span,
+                    });
+                }
+            }
         }
         Ok(())
     }
@@ -583,7 +638,15 @@ impl Tcx {
             self.check_item(&mut tir_prog, item)?;
         }
 
-        self.type_unifier.solve_constraints()?;
+        for (ty1, ty2, span) in &self.type_unifier.equational_constraints {
+            println!("equational constraint: {:?}, {:?}, {:?}", ty1, ty2, span);
+        }
+
+        for (k, v) in &self.type_unifier.parents {
+            println!("parent key: {:?}, value: {:?}", k, v);
+        }
+
+        self.type_unifier.solve_constraints(&self.globals)?;
 
         // for (k, v) in &self.type_unifier.parents {
         //     println!("parent key: {:?}, value: {:?}", k, v);
@@ -1266,11 +1329,19 @@ impl Tcx {
                 let array = self.check_expr(array)?;
 
                 let internal_type = match array.ty.kind() {
-                    TypeKind::Array(ty) => ty,
+                    TypeKind::Array(ty) => *ty,
                     TypeKind::Hole(_) => {
+                        // Create a new hole for the element type
                         let next_hole_id = self.find_next_hole_id();
-                        &Type::hole(next_hole_id) //if we're indexing off of a hole, we need a new hole type
-                        // ?y = ?x[i]
+                        let element_hole = Type::hole(next_hole_id);
+                        self.type_unifier.initialize_type(element_hole);
+
+                        // Add constraint that the array hole must be an array of the element hole type
+                        // ?x = [?y] where ?x is the array hole and ?y is the element hole
+                        let array_hole = Type::array(element_hole);
+                        self.push_equational_constraint(array_hole, array.ty, array.span);
+
+                        element_hole
                     }
                     _ => bail!(TypeError::IndexIntoNonArray {
                         span: array.span,
@@ -1279,13 +1350,12 @@ impl Tcx {
                 };
                 let index = self.check_expr(index)?;
                 self.push_equational_constraint(Type::int(), index.ty, index.span);
-                // self.ty_equiv(Type::int(), index.ty, index.span)?;
                 (
                     tir::ExprKind::ArrayIndex {
                         array: Box::new(array),
                         index: Box::new(index),
                     },
-                    *internal_type,
+                    internal_type,
                 )
             }
             ast::ExprKind::ArrayCopy { value, count } => {

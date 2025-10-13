@@ -1,0 +1,17 @@
+---
+source: tests/snapshots.rs
+assertion_line: 54
+expression: output
+---
+success = false
+stdout = ''
+stderr = '''
+Error:   × cannot project from type ?1
+   ╭─[complex_nested_inference.rice:8:16]
+ 7 │             let pair = data[i][j] in
+ 8 │             if pair.0 > 0 {
+   ·                ────
+ 9 │                 result := result + pair.1
+   ╰────
+
+'''

@@ -3,12 +3,15 @@ source: tests/snapshots.rs
 assertion_line: 54
 expression: output
 ---
-success = true
-stdout = '''
-6
-ABC
-10
-20
-30
+success = false
+stdout = ''
+stderr = '''
+Error:   × cannot project from type ?11
+    ╭─[parameter_inference.rice:19:27]
+ 18 │     println(combined);
+ 19 │     println(int_to_string(triple.0));
+    ·                           ──────
+ 20 │     println(int_to_string(triple.1));
+    ╰────
+
 '''
-stderr = ''

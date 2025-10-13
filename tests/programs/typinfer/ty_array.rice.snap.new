@@ -1,0 +1,11 @@
+---
+source: tests/snapshots.rs
+assertion_line: 54
+expression: output
+---
+success = true
+stdout = '''
+1
+5
+'''
+stderr = ''
