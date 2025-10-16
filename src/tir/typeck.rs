@@ -141,6 +141,12 @@ pub enum TypeError {
         span: Span,
     },
 
+    #[error("uninferred type {ty}")]
+    UninferredType {
+        ty: Type,
+        #[label]
+        span: Span,
+    },
     // #[error("all elements in array must have type {first_type}")]
     // NonHomogenousArray {
     //     #[label]
@@ -235,6 +241,46 @@ impl TypeUnifier {
 
                 true
             }
+            (
+                TypeKind::Func {
+                    inputs: inputs1,
+                    output: output1,
+                },
+                TypeKind::Func {
+                    inputs: inputs2,
+                    output: output2,
+                },
+            ) => {
+                // Check that both functions have the same number of parameters
+                if inputs1.len() != inputs2.len() {
+                    return false;
+                }
+
+                for (input1, input2) in inputs1.iter().zip(inputs2.iter()) {
+                    if !self.union(*input1, *input2) {
+                        return false;
+                    }
+                }
+
+                if !self.union(*output1, *output2) {
+                    return false;
+                }
+
+                let rooted_inputs = inputs1.iter().map(|t| self.find(*t)).collect::<Vec<_>>();
+                let rooted_output = self.find(*output1);
+
+                let unified_func = Type::func(rooted_inputs, rooted_output);
+                // println!(
+                //     "func1: {:?}, func2: {:?}, unified_func: {:?}",
+                //     root1, root2, unified_func
+                // );
+                self.initialize_type(unified_func);
+
+                self.parents.insert(root1, unified_func);
+                self.parents.insert(root2, unified_func);
+
+                true
+            }
             _ => {
                 // If both are concrete types (not holes), they must be equal to unify
                 if !matches!(root1.kind(), TypeKind::Hole(_))
@@ -273,19 +319,40 @@ impl TypeUnifier {
         self.solve_equational_constraints()?;
         self.solve_projection_constraints()?;
         self.solve_castable_constraints(globals)?;
+        for ty in self.parents.keys().cloned().collect::<Vec<_>>() {
+            let root_ty = self.find(ty);
+            fn has_hole(ty: Type) -> bool {
+                match ty.kind() {
+                    TypeKind::Hole(_) => true,
+                    TypeKind::Tuple(items) => items.iter().any(|t| has_hole(*t)),
+                    TypeKind::Func { inputs, output } => {
+                        inputs.iter().any(|t| has_hole(*t)) || has_hole(*output)
+                    }
+                    TypeKind::Array(elem) => has_hole(*elem),
+                    _ => false,
+                }
+            }
+            if has_hole(root_ty) {
+                return Err(TypeError::UninferredType {
+                    span: Span::DUMMY,
+                    ty: root_ty,
+                }
+                .into());
+            }
+        }
         Ok(())
     }
 
     fn solve_equational_constraints(&mut self) -> Result<()> {
         let constraints = std::mem::take(&mut self.equational_constraints);
         for (ty1, ty2, span) in constraints {
-            // println!(
-            //     "PREUNION: ty1: {:?}, root1: {:?}, ty2: {:?}, root2: {:?}",
-            //     ty1,
-            //     self.find(ty1),
-            //     ty2,
-            //     self.find(ty2)
-            // );
+            println!(
+                "PREUNION: ty1: {:?}, root1: {:?}, ty2: {:?}, root2: {:?}",
+                ty1,
+                self.find(ty1),
+                ty2,
+                self.find(ty2)
+            );
             ensure!(self.union(ty1, ty2), {
                 TypeError::TypeMismatch {
                     expected: ty1,
@@ -293,13 +360,13 @@ impl TypeUnifier {
                     span: span,
                 }
             });
-            // println!(
-            //     "POSTUNION: ty1: {:?}, root1: {:?}, ty2: {:?}, root2: {:?}",
-            //     ty1,
-            //     self.find(ty1),
-            //     ty2,
-            //     self.find(ty2)
-            // );
+            println!(
+                "POSTUNION: ty1: {:?}, root1: {:?}, ty2: {:?}, root2: {:?}",
+                ty1,
+                self.find(ty1),
+                ty2,
+                self.find(ty2)
+            );
         }
         Ok(())
     }
@@ -657,9 +724,9 @@ impl Tcx {
             self.check_item(&mut tir_prog, item)?;
         }
 
-        // for (ty1, ty2, span) in &self.type_unifier.equational_constraints {
-        //     println!("equational constraint: {:?}, {:?}, {:?}", ty1, ty2, span);
-        // }
+        for (ty1, ty2, span) in &self.type_unifier.equational_constraints {
+            println!("equational constraint: {:?}, {:?}, {:?}", ty1, ty2, span);
+        }
 
         // for (k, v) in &self.type_unifier.parents {
         //     println!("parent key: {:?}, value: {:?}", k, v);
@@ -1028,39 +1095,69 @@ impl Tcx {
             }
             ast::ExprKind::Call { f, args } => {
                 let f = self.check_expr(f)?;
-                ensure_let!(
-                    TypeKind::Func { inputs, output } = f.ty.kind(),
-                    TypeError::TypeMismatchCustom {
+
+                // Check arguments first
+                let arg_exprs: Vec<_> = args
+                    .iter()
+                    .map(|arg| self.check_expr(arg))
+                    .collect::<Result<_>>()?;
+
+                let (inputs, output) = match f.ty.kind() {
+                    TypeKind::Func { inputs, output } => {
+                        ensure!(
+                            args.len() == inputs.len(),
+                            TypeError::WrongNumArgs {
+                                expected: inputs.len(),
+                                actual: args.len(),
+                                span: expr.span
+                            }
+                        );
+                        for (input, arg_expr) in inputs.iter().zip(arg_exprs.clone()) {
+                            self.push_equational_constraint(*input, arg_expr.ty, arg_expr.span);
+                        }
+                        (inputs, output)
+                    }
+                    TypeKind::Hole(_) => {
+                        // f is a hole type, infer function signature from arguments
+                        // Create holes for each parameter type
+                        let mut param_types = Vec::new();
+                        for arg_expr in &arg_exprs {
+                            let next_hole_id = self.find_next_hole_id();
+                            let param_hole = Type::hole(next_hole_id);
+                            self.type_unifier.initialize_type(param_hole);
+
+                            // Constrain parameter to match argument type
+                            self.push_equational_constraint(param_hole, arg_expr.ty, arg_expr.span);
+
+                            param_types.push(param_hole);
+                        }
+
+                        let next_hole_id = self.find_next_hole_id();
+                        let return_hole = Type::hole(next_hole_id);
+                        self.type_unifier.initialize_type(return_hole);
+
+                        let func_ty = Type::func(param_types.clone(), return_hole);
+                        self.push_equational_constraint(f.ty, func_ty, f.span);
+
+                        match func_ty.kind() {
+                            TypeKind::Func {
+                                inputs: func_inputs,
+                                output: func_output,
+                            } => (func_inputs, func_output),
+                            _ => unreachable!(),
+                        }
+                    }
+                    _ => bail!(TypeError::TypeMismatchCustom {
                         expected: "function".into(),
                         actual: f.ty,
                         span: f.span
-                    }
-                );
-
-                ensure!(
-                    args.len() == inputs.len(),
-                    TypeError::WrongNumArgs {
-                        expected: inputs.len(),
-                        actual: args.len(),
-                        span: expr.span
-                    }
-                );
-
-                let args = args
-                    .iter()
-                    .zip_eq(inputs)
-                    .map(|(arg, param_ty)| {
-                        let e = self.check_expr(arg)?;
-                        self.push_equational_constraint(e.ty, *param_ty, e.span);
-                        // self.ty_equiv(e.ty, *param_ty, e.span)?;
-                        Ok(e)
-                    })
-                    .collect::<Result<Vec<_>>>()?;
+                    }),
+                };
 
                 (
                     tir::ExprKind::Call {
                         f: Box::new(f),
-                        args,
+                        args: arg_exprs,
                     },
                     *output,
                 )
