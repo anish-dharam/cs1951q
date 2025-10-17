@@ -1,8 +1,8 @@
-fn get_first(arr: [int]) -> int {
+fn get_first(arr: _) -> int {
     arr[0]
 }
 
-fn get_length(arr: [int]) -> int {
+fn get_length(arr: _) -> int {
     let len = 0 in
     let i = 0 in
     while i < 5 {
@@ -17,7 +17,7 @@ fn get_length(arr: [int]) -> int {
 }
 
 fn main() {
-    let numbers: [int] = [1, 2, 3, 4, 5] in
+    let numbers = [1, 2, 3, 4, 5] in
     let first = get_first(numbers) in
     let length = get_length(numbers) in
     println(int_to_string(first));

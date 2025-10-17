@@ -346,13 +346,8 @@ impl TypeUnifier {
     fn solve_equational_constraints(&mut self) -> Result<()> {
         let constraints = std::mem::take(&mut self.equational_constraints);
         for (ty1, ty2, span) in constraints {
-            println!(
-                "PREUNION: ty1: {:?}, root1: {:?}, ty2: {:?}, root2: {:?}",
-                ty1,
-                self.find(ty1),
-                ty2,
-                self.find(ty2)
-            );
+            // println!("PREUNION: ty1: {:?}, root1: {:?}, ty2: {:?}, root2: {:?}",ty1,self.find(ty1),ty2,self.find(ty2));
+
             ensure!(self.union(ty1, ty2), {
                 TypeError::TypeMismatch {
                     expected: ty1,
@@ -360,13 +355,7 @@ impl TypeUnifier {
                     span: span,
                 }
             });
-            println!(
-                "POSTUNION: ty1: {:?}, root1: {:?}, ty2: {:?}, root2: {:?}",
-                ty1,
-                self.find(ty1),
-                ty2,
-                self.find(ty2)
-            );
+            // println!("POSTUNION: ty1: {:?}, root1: {:?}, ty2: {:?}, root2: {:?}", ty1, self.find(ty1), ty2,self.find(ty2));
         }
         Ok(())
     }
@@ -728,10 +717,6 @@ impl Tcx {
             println!("equational constraint: {:?}, {:?}, {:?}", ty1, ty2, span);
         }
 
-        // for (k, v) in &self.type_unifier.parents {
-        //     println!("parent key: {:?}, value: {:?}", k, v);
-        // }
-
         self.type_unifier.solve_constraints(&self.globals)?;
 
         // for (k, v) in &self.type_unifier.parents {
@@ -970,14 +955,14 @@ impl Tcx {
                     }
                     Binop::Add | Binop::Sub | Binop::Mul | Binop::Div | Binop::Rem | Binop::Exp => {
                         self.push_equational_constraint(Type::int(), left.ty, left.span);
-                        self.push_equational_constraint(left.ty, right.ty, right.span);
+                        self.push_equational_constraint(Type::int(), right.ty, right.span);
                         // self.ty_constraint(TypeConstraint::Numeric, left.ty, left.span)?;
                         // self.ty_equiv(left.ty, right.ty, right.span)?;
                         left.ty
                     }
                     Binop::Ge | Binop::Gt | Binop::Le | Binop::Lt => {
                         self.push_equational_constraint(Type::int(), left.ty, left.span);
-                        self.push_equational_constraint(left.ty, right.ty, right.span);
+                        self.push_equational_constraint(Type::int(), right.ty, right.span);
                         // self.ty_constraint(TypeConstraint::Numeric, left.ty, left.span)?;
                         // self.ty_equiv(left.ty, right.ty, right.span)?;
                         Type::bool()
