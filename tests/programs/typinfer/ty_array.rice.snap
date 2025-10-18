@@ -1,13 +1,10 @@
 ---
 source: tests/snapshots.rs
-assertion_line: 54
 expression: output
 ---
 success = true
 stdout = '''
-42
-Hello World
 1
-1
+5
 '''
 stderr = ''

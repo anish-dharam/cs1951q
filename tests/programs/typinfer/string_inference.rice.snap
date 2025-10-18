@@ -1,0 +1,10 @@
+---
+source: tests/snapshots.rs
+expression: output
+---
+success = true
+stdout = '''
+Hello World
+Hi Hi Hi 
+'''
+stderr = ''

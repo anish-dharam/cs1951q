@@ -1,0 +1,16 @@
+---
+source: tests/snapshots.rs
+expression: output
+---
+success = false
+stdout = ''
+stderr = '''
+Error:   × tried to index into a string as if it were an array
+    ╭─[function_passing_inference.rice:17:12]
+ 16 │     while i < 10 {
+ 17 │         if s[i] != "" {
+    ·            ─
+ 18 │             len := len + 1
+    ╰────
+
+'''

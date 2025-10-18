@@ -18,7 +18,7 @@ pub use typeck::{Globals, Tcx};
 
 /// Type-checks a syntax tree into a [type context][Tcx] and a [typed program][Program].
 pub fn typecheck(prog: ast::Ast) -> Result<(Tcx, Program)> {
-    let mut tcx = Tcx::new();
+    let mut tcx = Tcx::new(prog.num_holes);
     let mut tir = tcx.check(&prog.prog)?;
     desugar::desugar(&mut tir);
     closure::closure_conversion(&tcx, &mut tir);

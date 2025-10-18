@@ -63,6 +63,7 @@ fn gen_parse_error(err: LalrpopError<usize, Token<'_>, &'static str>) -> ParseEr
 /// The abstract syntax tree parsed from a source file.
 pub struct Ast {
     pub prog: self::types::Program,
+    pub num_holes: usize,
 }
 
 /// Parse a source file into an AST.
@@ -71,7 +72,7 @@ pub fn parse(input: &Input) -> Result<Ast> {
     let prog = ProgramParser::new()
         .parse(&holes, input, &input.contents)
         .map_err(gen_parse_error)?;
-    Ok(Ast { prog })
+    Ok(Ast { prog, num_holes: holes.get() })
 }
 
 /// A source file provided by the user.
