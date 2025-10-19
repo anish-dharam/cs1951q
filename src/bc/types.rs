@@ -120,21 +120,30 @@ impl Body {
             .map(BasicBlockIdx::from)
             .collect_vec();
 
-        let locations = rpo
-            .iter()
-            .copied()
-            .flat_map(|block| {
-                let num_instrs = cfg.node_weight(block.into()).unwrap().statements.len() + 1;
-                (0..num_instrs).map(move |instr| Location { block, instr })
-            })
-            .collect();
-        let locations = Arc::new(locations);
+        let locations = Self::build_domain(&cfg, &rpo);
 
         Body {
             cfg,
             rpo,
             locations,
         }
+    }
+
+    fn build_domain(cfg: &Cfg, rpo: &[BasicBlockIdx]) -> Arc<IndexedDomain<Location>> {
+        Arc::new(
+            rpo.iter()
+                .copied()
+                .flat_map(|block| {
+                    let num_instrs = cfg.node_weight(block.into()).unwrap().statements.len() + 1;
+                    (0..num_instrs).map(move |instr| Location { block, instr })
+                })
+                .collect(),
+        )
+    }
+
+    /// Regenerates the location domain, to be used after adding or removing instructions.
+    pub fn regenerate_domain(&mut self) {
+        self.locations = Self::build_domain(&self.cfg, &self.rpo);
     }
 
     /// Returns the data corresponding to the given basic block.
