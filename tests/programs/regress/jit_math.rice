@@ -1,0 +1,12 @@
+#[jit]
+fn compute() -> int {
+  let x = 1 + 2 in
+  let y = x * 3 in
+  let z = y / 9 in
+  z
+}
+
+#[jit]
+fn main() {
+  println(int_to_string(compute()))
+}

@@ -3,6 +3,8 @@
 use miette::Result;
 use strum::{Display, EnumString};
 
+use crate::bc::dataflow::{constant_propagation, dead_code};
+
 use self::types::{Function, Program};
 
 mod dataflow;
@@ -45,9 +47,7 @@ type Pass = Box<dyn Fn(&mut Function) -> bool>;
 
 /// Run optimization passes to a fixed point.
 fn optimize_func(func: &mut Function) {
-    let passes: Vec<Pass> = vec![
-        // TODO: insert passes here
-    ];
+    let passes: Vec<Pass> = vec![Box::new(dead_code), Box::new(constant_propagation)];
 
     loop {
         let mut changed = false;

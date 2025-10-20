@@ -1,0 +1,10 @@
+// 2
+fn foo() -> (int, int) {
+    let x = ((2, 3), (4, 5)) in
+    x.0
+}
+
+fn main() {
+    let t = foo() in
+    println(int_to_string(t.0))
+}

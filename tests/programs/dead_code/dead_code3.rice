@@ -1,0 +1,5 @@
+// 2
+fn main() {
+  let x = 1 + 1 in  
+  println(int_to_string(x))
+}

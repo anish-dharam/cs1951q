@@ -1,0 +1,11 @@
+// 2
+
+#[jit]
+fn consume(t: (int, int)) {
+    println(int_to_string(t.0))
+}
+
+fn main() {
+    let t = (0, 0) in
+    consume(t); ()
+}

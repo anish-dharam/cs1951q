@@ -1,0 +1,24 @@
+struct Point(int, int);
+
+interface ToString {
+  fn to_string(Self) -> string;
+}
+
+impl ToString for Point {
+  fn to_string(self: Self) -> string {
+    "(" ^ int_to_string(self.0) ^ ", " ^ int_to_string(self.1) ^ ")"
+  }
+}
+
+fn add(p1: Point, p2: Point) -> Point {
+  new Point(p1.0 + p2.0, p1.1 + p2.1)
+}
+
+fn print_stringable(x: @ToString) {
+  println(x.to_string())
+}
+
+fn main() {
+  let p = add(new Point(1, 1), new Point(2, 2)) in  
+  print_stringable(p as @ToString)
+}

@@ -1,0 +1,7 @@
+#[jit] fn f(s: string) {
+  println(s)
+}
+
+fn main() {
+  f("Hello world!")  
+}

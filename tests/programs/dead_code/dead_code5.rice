@@ -1,0 +1,6 @@
+//
+fn main() {
+  let x = 0 in
+  let y = x + 1 in
+  ()
+}

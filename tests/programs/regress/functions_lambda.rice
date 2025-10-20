@@ -1,0 +1,6 @@
+fn main() {
+  let y = 88 in
+  let f: fn (int) -> int = \(z : int) -> int. z + y in
+  let z = f(99) in
+  println(int_to_string(z))
+}

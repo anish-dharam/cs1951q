@@ -1,0 +1,6 @@
+// 2
+fn main() {
+  let x = 2 in
+  let y = x in
+  println(int_to_string(y))
+}

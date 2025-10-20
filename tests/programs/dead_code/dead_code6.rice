@@ -1,0 +1,6 @@
+// Hello world
+fn main() {
+  let x = "Hello" in
+  let y = x ^ " world" in
+  println(y)
+}

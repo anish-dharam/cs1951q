@@ -423,9 +423,15 @@ impl Rvalue {
                     .chain(count.as_place())
                     .collect(),
             },
-            Rvalue::Call { args: ops, .. } | Rvalue::Closure { env: ops, .. } => {
-                ops.iter().filter_map(|op| op.as_place()).collect()
+            Rvalue::Call { f, args } => {
+                // Extract place from function operand if it's a place
+                let mut places: SmallVec<[Place; 2]> = f.as_place().into_iter().collect();
+                // Add places from arguments
+                places.extend(args.iter().filter_map(|op| op.as_place()));
+                places
             }
+            Rvalue::Closure { env, .. } => env.iter().filter_map(|op| op.as_place()).collect(),
+
             Rvalue::MethodCall { receiver, args, .. } => args
                 .iter()
                 .chain([receiver])

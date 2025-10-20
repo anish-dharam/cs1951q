@@ -1,0 +1,9 @@
+// 2
+fn foo(x: int) {
+  println(int_to_string(x))
+}
+
+fn main() {
+  let x = 2 in
+  foo(x)
+}

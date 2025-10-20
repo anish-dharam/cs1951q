@@ -1,0 +1,6 @@
+// 2
+fn main() {
+    let t = (2, 3) in
+    let t2 = (t, t) in
+    println(int_to_string((t2.1).0))
+}

@@ -1,0 +1,9 @@
+#[jit]
+fn make_string() -> string {
+  "a" ^ "b"
+}
+
+#[jit]
+fn main() {
+  println(make_string() ^ int_to_string(0))
+}

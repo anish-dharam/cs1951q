@@ -6,19 +6,26 @@
 
 use either::Either;
 use indexical::{
-    IndexedValue, bitset::bitvec::ArcIndexSet as IndexSet, vec::ArcIndexVec as IndexVec,
+    IndexedDomain, IndexedValue, bitset::bitvec::ArcIndexSet as IndexSet,
+    vec::ArcIndexVec as IndexVec,
 };
-use itertools::fold;
+use itertools::{any, fold};
+use rayon::range;
 use std::{
-    collections::{HashSet, VecDeque},
+    cmp::Reverse,
+    collections::{HashMap, HashSet, VecDeque},
     iter::successors,
     sync::Arc,
 };
 use wasmparser::collections::Set;
 
-use crate::bc::types::LocalIdx;
+use crate::bc::types::{Const, LocalIdx, Operand, Rvalue};
+
+use crate::utils::Symbol;
 
 use super::types::{Function, Location, Statement, Terminator};
+
+use super::visit::VisitMut;
 
 /// A trait for types representing a [join-semilattice](https://en.wikipedia.org/wiki/Semilattice).
 ///
@@ -149,6 +156,371 @@ pub fn analyze_to_fixpoint<A: Analysis>(analysis: &A, func: &Function) -> Analys
     }
 }
 
+//                   CONSTANT PROPAGATION ANALYSIS
+struct ConstantAnalysis;
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum Constant {
+    Bottom,
+    Const(Const),
+    Closure(Symbol),
+    Top,
+}
+
+impl JoinSemiLattice for Constant {
+    fn join(&mut self, other: &Self) -> bool {
+        match (self.clone(), other.clone()) {
+            (Constant::Bottom, Constant::Const(c)) => {
+                *self = Constant::Const(c.clone());
+                true
+            }
+            (Constant::Bottom, Constant::Closure(f)) => {
+                *self = Constant::Closure(f.clone());
+                true
+            }
+            (Constant::Const(_), Constant::Top)
+            | (Constant::Bottom, Constant::Top)
+            | (Constant::Closure(_), Constant::Top)
+            | (Constant::Const(_), Constant::Closure(_))
+            | (Constant::Closure(_), Constant::Const(_)) => {
+                *self = Constant::Top;
+                true
+            }
+            (Constant::Const(c1), Constant::Const(c2)) => {
+                if (c1 == c2) {
+                    false
+                } else {
+                    *self = Constant::Top;
+                    true
+                }
+            }
+
+            (Constant::Closure(f1), Constant::Closure(f2)) => {
+                if (f1 == f2) {
+                    false
+                } else {
+                    *self = Constant::Top;
+                    true
+                }
+            }
+            _ => false,
+        }
+    }
+}
+
+impl JoinSemiLattice for HashMap<LocalIdx, Constant> {
+    fn join(&mut self, other: &Self) -> bool {
+        let mut changed = false;
+
+        // Process all variables in the other state
+        for (var, other_val) in other {
+            match self.get_mut(var) {
+                Some(self_val) => {
+                    // Variable exists in both states, join them
+                    if self_val.join(other_val) {
+                        changed = true;
+                    }
+                }
+                None => {
+                    // Variable only exists in other state, Everything should be everywhere
+                    panic!("Variable only exists in other state, every var should be bottom");
+                }
+            }
+        }
+
+        changed
+    }
+}
+
+fn fold_constants(
+    state: &HashMap<LocalIdx, Constant>,
+    left: Constant,
+    right: Constant,
+    op: super::types::Binop,
+) -> Constant {
+    match (left, right) {
+        //either top
+        (Constant::Top, _) | (_, Constant::Top) => Constant::Top,
+        // Both integers
+        (Constant::Const(Const::Int(li)), Constant::Const(Const::Int(ri))) => {
+            match op {
+                super::types::Binop::Add => (Constant::Const(Const::Int(li + ri))),
+                super::types::Binop::Sub => (Constant::Const(Const::Int(li - ri))),
+                super::types::Binop::Mul => (Constant::Const(Const::Int(li * ri))),
+                super::types::Binop::Div => {
+                    if ri == 0 {
+                        panic!("Division by zero");
+                    } else {
+                        (Constant::Const(Const::Int(li / ri)))
+                    }
+                }
+                super::types::Binop::Rem => {
+                    if ri == 0 {
+                        panic!("Division by zero");
+                    } else {
+                        (Constant::Const(Const::Int(li % ri)))
+                    }
+                }
+                super::types::Binop::Eq => (Constant::Const(Const::Bool(li == ri))),
+                super::types::Binop::Neq => (Constant::Const(Const::Bool(li != ri))),
+                super::types::Binop::Lt => (Constant::Const(Const::Bool(li < ri))),
+                super::types::Binop::Gt => (Constant::Const(Const::Bool(li > ri))),
+                super::types::Binop::Le => (Constant::Const(Const::Bool(li <= ri))),
+                super::types::Binop::Ge => (Constant::Const(Const::Bool(li >= ri))),
+                super::types::Binop::Shl => (Constant::Const(Const::Int(li << ri))),
+                super::types::Binop::Shr => (Constant::Const(Const::Int(li >> ri))),
+                super::types::Binop::BitAnd => (Constant::Const(Const::Int(li & ri))),
+                super::types::Binop::BitOr => (Constant::Const(Const::Int(li | ri))),
+                super::types::Binop::Exp => {
+                    // Handle exponentiation (you might want to handle overflow)
+                    (Constant::Const(Const::Int(li.pow(ri as u32))))
+                }
+                _ => panic!("Bad type checking in compiler!"),
+            }
+        }
+
+        // Both floats
+        (Constant::Const(Const::Float(lf)), Constant::Const(Const::Float(rf))) => match op {
+            super::types::Binop::Add => (Constant::Const(Const::Float(lf + rf))),
+            super::types::Binop::Sub => (Constant::Const(Const::Float(lf - rf))),
+            super::types::Binop::Mul => (Constant::Const(Const::Float(lf * rf))),
+            super::types::Binop::Div => {
+                if *rf == 0.0 {
+                    panic!("Division by zero");
+                } else {
+                    (Constant::Const(Const::Float(lf / rf)))
+                }
+            }
+            super::types::Binop::Rem => {
+                if *rf == 0.0 {
+                    panic!("Division by zero");
+                } else {
+                    (Constant::Const(Const::Float(lf % rf)))
+                }
+            }
+            super::types::Binop::Eq => (Constant::Const(Const::Bool(lf == rf))),
+            super::types::Binop::Neq => (Constant::Const(Const::Bool(lf != rf))),
+            super::types::Binop::Lt => (Constant::Const(Const::Bool(lf < rf))),
+            super::types::Binop::Gt => (Constant::Const(Const::Bool(lf > rf))),
+            super::types::Binop::Le => (Constant::Const(Const::Bool(lf <= rf))),
+            super::types::Binop::Ge => (Constant::Const(Const::Bool(lf >= rf))),
+            super::types::Binop::Exp => {
+                (Constant::Const(Const::Float(ordered_float::OrderedFloat((lf.powf(*rf))))))
+            }
+            _ => panic!("Bad type checking in compiler!"),
+        },
+
+        // String concatenation
+        (Constant::Const(Const::String(ls)), Constant::Const(Const::String(rs))) => match op {
+            super::types::Binop::Concat => {
+                (Constant::Const(Const::String(format!("{}{}", ls, rs))))
+            }
+            super::types::Binop::Eq => (Constant::Const(Const::Bool(ls == rs))),
+            super::types::Binop::Neq => (Constant::Const(Const::Bool(ls != rs))),
+            _ => panic!("Bad type checking in compiler!"),
+        },
+
+        // Boolean operations
+        (Constant::Const(Const::Bool(lb)), Constant::Const(Const::Bool(rb))) => match op {
+            super::types::Binop::And => (Constant::Const(Const::Bool(lb && rb))),
+            super::types::Binop::Or => (Constant::Const(Const::Bool(lb || rb))),
+            super::types::Binop::Eq => (Constant::Const(Const::Bool(lb == rb))),
+            super::types::Binop::Neq => (Constant::Const(Const::Bool(lb != rb))),
+            _ => panic!("Bad type checking in compiler!"),
+        },
+
+        // Other combinations - could be anything! (or bad type checking in compiler!)
+        _ => Constant::Top,
+    }
+}
+
+impl Analysis for ConstantAnalysis {
+    type Domain = HashMap<LocalIdx, Constant>;
+
+    const DIRECTION: Direction = Direction::Forward;
+
+    fn bottom(&self, func: &Function) -> Self::Domain {
+        HashMap::from_iter(
+            func.locals
+                .iter()
+                .map(|local| (func.locals.index(local), Constant::Bottom))
+                .collect::<HashMap<_, _>>(),
+        )
+        // let domain = HashMap<LocalIdx, Constant>::from_iter(
+        // func.locals
+        //     .iter()
+        //     .map(|local| (func.locals.index(local), Constant::Bottom))
+        //     .collect::<HashMap<_, _>>());
+    }
+
+    fn handle_statement(&self, state: &mut Self::Domain, statement: &Statement, loc: Location) {
+        //helper
+
+        match &statement.rvalue {
+            super::types::Rvalue::Operand(operand) => match operand {
+                super::types::Operand::Const(c) => {
+                    state.insert(statement.place.local, Constant::Const(c.clone()));
+                }
+                super::types::Operand::Place(place) => {
+                    state.insert(
+                        statement.place.local,
+                        state.get(&place.local).unwrap().clone(),
+                    );
+                }
+                _ => (),
+            },
+            super::types::Rvalue::Cast { op, ty } => match op {
+                crate::bc::types::Operand::Const(c) => {
+                    state.insert(statement.place.local, Constant::Const(c.clone()));
+                }
+                crate::bc::types::Operand::Place(place) => {
+                    state.insert(
+                        statement.place.local,
+                        state.get(&place.local).unwrap().clone(),
+                    );
+                }
+                crate::bc::types::Operand::Func { f, ty } => (),
+            },
+            super::types::Rvalue::Closure { f, env } => match env.len() {
+                0 => {
+                    state.insert(statement.place.local, Constant::Closure(*f));
+                }
+                _ => (),
+            },
+            super::types::Rvalue::Binop { op, left, right } => {
+                // Get constant values if they exist
+                let left_const = match left {
+                    super::types::Operand::Const(c) => Some(Constant::Const(c.clone())),
+                    super::types::Operand::Place(p) => state.get(&p.local).cloned(),
+                    _ => None,
+                };
+
+                let right_const = match right {
+                    super::types::Operand::Const(c) => Some(Constant::Const(c.clone())),
+                    super::types::Operand::Place(p) => state.get(&p.local).cloned(),
+                    _ => None,
+                };
+
+                match (left_const, right_const) {
+                    (Some(c1), Some(c2)) => {
+                        state.insert(statement.place.local, fold_constants(state, c1, c2, *op));
+                    }
+                    _ => {
+                        panic!("What BinOps are we using on Functions?")
+                    }
+                }
+            }
+            _ => (),
+        }
+    }
+
+    fn handle_terminator(&self, state: &mut Self::Domain, terminator: &Terminator, loc: Location) {
+        ()
+    }
+}
+
+// pub fn constant_propagation(func: &mut Function) -> bool {
+//     let analysis_state = analyze_to_fixpoint(&ConstantAnalysis, func);
+//     let mut code_changed = false;
+
+//     //iterate through basic blocks
+//     for block_idx in func.body.clone().blocks() {
+//         let block = func.body.data_mut(block_idx);
+
+//         for i in (0..block.statements.len()) {
+//             let statement = block.statements.get(i).unwrap();
+//         }
+//     }
+
+//     code_changed
+// }
+pub fn constant_propagation(func: &mut Function) -> bool {
+    let analysis_state = analyze_to_fixpoint(&ConstantAnalysis, func);
+    let mut code_changed = false;
+
+    // Create a visitor to propagate constants
+    let mut propagator = ConstantPropagator {
+        analysis_state: &analysis_state,
+        code_changed: &mut code_changed,
+    };
+
+    propagator.visit_function(func);
+
+    code_changed
+}
+
+struct ConstantPropagator<'a> {
+    analysis_state: &'a AnalysisState<ConstantAnalysis>,
+    code_changed: &'a mut bool,
+}
+
+impl<'a> VisitMut for ConstantPropagator<'a> {
+    fn visit_operand(&mut self, operand: &mut Operand, loc: Location) {
+        match operand {
+            Operand::Place(place) => {
+                // Check if this place holds a constant value
+                if let Some(constant) = self.analysis_state.get(loc).get(&place.local) {
+                    match constant {
+                        Constant::Const(c) => {
+                            *operand = Operand::Const(c.clone());
+                            *self.code_changed = true;
+                        }
+                        Constant::Closure(f) => {
+                            *operand = Operand::Func {
+                                f: *f,
+                                ty: place.ty,
+                            };
+                            *self.code_changed = true;
+                        }
+                        _ => {} // Don't propagate Top or Bottom
+                    }
+                }
+            }
+            _ => {} // Constants and functions are already constant
+        }
+    }
+
+    fn visit_rvalue(&mut self, rvalue: &mut Rvalue, loc: Location) {
+        match rvalue {
+            Rvalue::Binop { op, left, right } => {
+                // First visit operands to potentially propagate constants
+                self.visit_operand(left, loc);
+                self.visit_operand(right, loc);
+
+                // If both operands are now constants, fold the operation
+                if let (Operand::Const(left_const), Operand::Const(right_const)) = (left, right) {
+                    let result = fold_constants(
+                        self.analysis_state.get(loc),
+                        Constant::Const(left_const.clone()),
+                        Constant::Const(right_const.clone()),
+                        *op,
+                    );
+
+                    if let Constant::Const(folded_const) = result {
+                        *rvalue = Rvalue::Operand(Operand::Const(folded_const));
+                        *self.code_changed = true;
+                    }
+                }
+            }
+            Rvalue::Call { f, args } => {
+                // Visit function and arguments first
+                self.visit_operand(f, loc);
+                for arg in args {
+                    self.visit_operand(arg, loc);
+                }
+
+                // If function is a known closure and all args are constants,
+                // we could potentially inline, but for now just propagate
+            }
+            _ => {
+                // For other rvalues, just visit their operands
+                self.super_visit_rvalue(rvalue, loc);
+            }
+        }
+    }
+}
+
+//                   DEAD CODE ELIMINATION ANALYSIS
 struct DeadCodeAnalysis;
 
 impl JoinSemiLattice for HashSet<LocalIdx> {
@@ -170,6 +542,7 @@ impl Analysis for DeadCodeAnalysis {
 
     fn handle_statement(&self, state: &mut Self::Domain, statement: &Statement, loc: Location) {
         let def: HashSet<LocalIdx> = HashSet::from([statement.place.local]);
+
         let used: HashSet<LocalIdx> = HashSet::from(
             statement
                 .rvalue
@@ -197,7 +570,67 @@ impl Analysis for DeadCodeAnalysis {
     }
 }
 
+fn has_side_effect(statement: Statement) -> bool {
+    any(statement.place.projection.clone(), |p| match p {
+        crate::bc::types::ProjectionElem::Field { index, ty } => false,
+        crate::bc::types::ProjectionElem::ArrayIndex { index, ty } => true,
+    }) || match statement.rvalue {
+        super::types::Rvalue::Operand(op) => match op {
+            crate::bc::types::Operand::Place(place) => any(place.projection.clone(), |p| match p {
+                crate::bc::types::ProjectionElem::Field { index, ty } => false,
+                crate::bc::types::ProjectionElem::ArrayIndex { index, ty } => true,
+            }),
+            _ => false,
+        },
+        super::types::Rvalue::Binop { op, left, right } => match op {
+            crate::bc::types::Binop::Div => true,
+            _ => false,
+        },
+        super::types::Rvalue::Call { f, args } => true,
+        super::types::Rvalue::MethodCall {
+            receiver,
+            method,
+            args,
+        } => true,
+        _ => false,
+    }
+}
+
 pub fn dead_code(func: &mut Function) -> bool {
-    true
+    let analysis_state = analyze_to_fixpoint(&DeadCodeAnalysis, func);
+    let mut code_eliminated = false;
+
+    //iterate through basic blocks
+    for block_idx in func.body.clone().blocks() {
+        let block = func.body.data_mut(block_idx);
+        let original_size = block.statements.len();
+
+        for i in (0..block.statements.len()).rev() {
+            let statement = block.statements.get(i).unwrap();
+            if (!analysis_state // doesn't contain var
+                .get(Location {
+                    block: block_idx,
+                    instr: i,
+                })
+                .contains(&statement.place.local)
+                && !has_side_effect(statement.clone()))
+            {
+                // println!("Eliminating statement: {:?}", statement);
+                code_eliminated = true;
+                block.statements.remove(i);
+            }
+        }
+    }
+
+    if code_eliminated {
+        func.body.regenerate_domain();
+    }
+    code_eliminated
+    //run analysis (get all the state_outs)
+    // then remove a statement v = ... if:
+    //    v is not in state_out
+    //    and there are no side effect
+
+    // so leave a line if v is in state_out, or if it has a side effect
     // return true if code was eliminated
 }
