@@ -207,7 +207,6 @@ impl Analysis for AndersenAnalysis {
     const DIRECTION: Direction = Direction::Forward;
 
     fn bottom(&self, func: &Function) -> Self::Domain {
-        // Start with all locals mapped to empty points-to sets
         HashMap::from_iter(
             func.locals
                 .indices()
@@ -236,14 +235,8 @@ impl Analysis for AndersenAnalysis {
                     AndersenAnalysis::union_into(state.entry(dst_local).or_default(), &src);
                 }
             }
-            Rvalue::Binop { .. } => {
-                // Non-pointer-producing in our model; ignore.
-            }
-            Rvalue::Closure { .. } => {
-                // Conservative handling: do not attempt precise flow for closures.
-            }
             Rvalue::Call { f, args } => {
-                // Conservative: all inputs flow to each other and to the output
+                // : all inputs flow to each other and to the output
                 let mut participants: Vec<LocalIdx> = Vec::new();
                 if let Some(l) = AndersenAnalysis::base_local_of_operand(f) {
                     participants.push(l);
@@ -291,6 +284,30 @@ impl Analysis for AndersenAnalysis {
                     AndersenAnalysis::union_into(state.entry(l).or_default(), &total);
                 }
             }
+            Rvalue::Closure { env, .. } => {
+                // Conservative: all env operands flow to each other and to the output
+                let mut participants: Vec<LocalIdx> = Vec::new();
+                for env_op in env {
+                    if let Some(l) = AndersenAnalysis::base_local_of_operand(env_op) {
+                        participants.push(l);
+                    }
+                }
+                participants.push(dst_local);
+
+                // Build the union of all points-to sets
+                let mut total: PointsToSet = PointsToSet::new();
+                for l in &participants {
+                    if let Some(s) = state.get(l) {
+                        total.extend(s.iter().copied());
+                    }
+                }
+
+                // Write back to all participants
+                for l in participants {
+                    AndersenAnalysis::union_into(state.entry(l).or_default(), &total);
+                }
+            }
+            _ => {} //binop,
         }
     }
 
@@ -300,7 +317,6 @@ impl Analysis for AndersenAnalysis {
         _terminator: &Terminator,
         _loc: Location,
     ) {
-        // Nothing to do for returns or branches in a flow-insensitive analysis
     }
 }
 
@@ -400,6 +416,7 @@ fn compute_escaping_allocations(
                 // Check returns
                 match terminator.kind() {
                     TerminatorKind::Return(operand) => {
+                        println!("return escape");
                         if let Some(local) = base_local_of_operand(operand) {
                             if let Some(points_to) = pointer_domain.get(&local) {
                                 escaping.extend(points_to.iter().copied());
