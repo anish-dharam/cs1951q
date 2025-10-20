@@ -156,6 +156,179 @@ pub fn analyze_to_fixpoint<A: Analysis>(analysis: &A, func: &Function) -> Analys
     }
 }
 
+// =====================
+// ANDERSEN POINTER ANALYSIS (flow-insensitive, field-insensitive)
+// =====================
+
+/// Allocation site represented by the `Location` of the `Rvalue::Alloc` statement.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct Allocation(pub Location);
+
+type PointsToSet = HashSet<Allocation>;
+type PointerDomain = HashMap<LocalIdx, PointsToSet>;
+
+impl JoinSemiLattice for PointerDomain {
+    fn join(&mut self, other: &Self) -> bool {
+        let mut changed = false;
+        for (local, other_set) in other {
+            let entry = self.entry(*local).or_default();
+            let before = entry.len();
+            entry.extend(other_set.iter().copied());
+            if entry.len() != before {
+                changed = true;
+            }
+        }
+        changed
+    }
+}
+
+struct AndersenAnalysis;
+
+impl AndersenAnalysis {
+    #[inline]
+    fn base_local_of_operand(op: &Operand) -> Option<LocalIdx> {
+        match op {
+            Operand::Place(p) => Some(p.local),
+            _ => None,
+        }
+    }
+
+    #[inline]
+    fn union_into(dst: &mut PointsToSet, src: &PointsToSet) -> bool {
+        let before = dst.len();
+        dst.extend(src.iter().copied());
+        dst.len() != before
+    }
+}
+
+impl Analysis for AndersenAnalysis {
+    type Domain = PointerDomain;
+
+    const DIRECTION: Direction = Direction::Forward;
+
+    fn bottom(&self, func: &Function) -> Self::Domain {
+        // Start with all locals mapped to empty points-to sets
+        HashMap::from_iter(
+            func.locals
+                .indices()
+                .map(|local_idx| (local_idx, PointsToSet::new()))
+                .collect::<HashMap<_, _>>(),
+        )
+    }
+
+    fn handle_statement(&self, state: &mut Self::Domain, statement: &Statement, loc: Location) {
+        // Field-insensitive: use the base local of the destination
+        let dst_local = statement.place.local;
+
+        match &statement.rvalue {
+            Rvalue::Alloc { .. } => {
+                state.entry(dst_local).or_default().insert(Allocation(loc));
+            }
+            Rvalue::Operand(op) => {
+                if let Some(src_local) = AndersenAnalysis::base_local_of_operand(op) {
+                    let src = state.get(&src_local).cloned().unwrap_or_default();
+                    AndersenAnalysis::union_into(state.entry(dst_local).or_default(), &src);
+                }
+            }
+            Rvalue::Cast { op, .. } => {
+                if let Some(src_local) = AndersenAnalysis::base_local_of_operand(op) {
+                    let src = state.get(&src_local).cloned().unwrap_or_default();
+                    AndersenAnalysis::union_into(state.entry(dst_local).or_default(), &src);
+                }
+            }
+            Rvalue::Binop { .. } => {
+                // Non-pointer-producing in our model; ignore.
+            }
+            Rvalue::Closure { .. } => {
+                // Conservative handling: do not attempt precise flow for closures.
+            }
+            Rvalue::Call { f, args } => {
+                // Conservative: all inputs flow to each other and to the output
+                let mut participants: Vec<LocalIdx> = Vec::new();
+                if let Some(l) = AndersenAnalysis::base_local_of_operand(f) {
+                    participants.push(l);
+                }
+                for a in args {
+                    if let Some(l) = AndersenAnalysis::base_local_of_operand(a) {
+                        participants.push(l);
+                    }
+                }
+                participants.push(dst_local);
+
+                // Build the union of all points-to sets
+                let mut total: PointsToSet = PointsToSet::new();
+                for l in &participants {
+                    if let Some(s) = state.get(l) {
+                        total.extend(s.iter().copied());
+                    }
+                }
+
+                // Write back to all participants
+                for l in participants {
+                    AndersenAnalysis::union_into(state.entry(l).or_default(), &total);
+                }
+            }
+            Rvalue::MethodCall { receiver, args, .. } => {
+                // Same conservative treatment as Call
+                let mut participants: Vec<LocalIdx> = Vec::new();
+                if let Some(l) = AndersenAnalysis::base_local_of_operand(receiver) {
+                    participants.push(l);
+                }
+                for a in args {
+                    if let Some(l) = AndersenAnalysis::base_local_of_operand(a) {
+                        participants.push(l);
+                    }
+                }
+                participants.push(dst_local);
+
+                let mut total: PointsToSet = PointsToSet::new();
+                for l in &participants {
+                    if let Some(s) = state.get(l) {
+                        total.extend(s.iter().copied());
+                    }
+                }
+                for l in participants {
+                    AndersenAnalysis::union_into(state.entry(l).or_default(), &total);
+                }
+            }
+        }
+    }
+
+    fn handle_terminator(
+        &self,
+        _state: &mut Self::Domain,
+        _terminator: &Terminator,
+        _loc: Location,
+    ) {
+        // Nothing to do for returns or branches in a flow-insensitive analysis
+    }
+}
+
+/// Run the Andersen-style pointer analysis and return the final flow-insensitive mapping
+/// from locals to the set of allocation sites they may point to.
+pub fn pointer_analysis(func: &mut Function) -> bool {
+    let analysis_state = analyze_to_fixpoint(&AndersenAnalysis, func);
+
+    // Aggregate all location states into a single flow-insensitive result
+    let mut result: PointerDomain = HashMap::from_iter(
+        func.locals
+            .indices()
+            .map(|local_idx| (local_idx, PointsToSet::new()))
+            .collect::<HashMap<_, _>>(),
+    );
+
+    for state in analysis_state.iter() {
+        let _ = result.join(state);
+    }
+    for (local_idx, points_to_set) in result.iter() {
+        println!(
+            "local_idx: {:?}, points_to_set: {:?}",
+            local_idx, points_to_set
+        );
+    }
+    false
+}
+
 //                   CONSTANT PROPAGATION ANALYSIS
 struct ConstantAnalysis;
 
@@ -424,21 +597,6 @@ impl Analysis for ConstantAnalysis {
     }
 }
 
-// pub fn constant_propagation(func: &mut Function) -> bool {
-//     let analysis_state = analyze_to_fixpoint(&ConstantAnalysis, func);
-//     let mut code_changed = false;
-
-//     //iterate through basic blocks
-//     for block_idx in func.body.clone().blocks() {
-//         let block = func.body.data_mut(block_idx);
-
-//         for i in (0..block.statements.len()) {
-//             let statement = block.statements.get(i).unwrap();
-//         }
-//     }
-
-//     code_changed
-// }
 pub fn constant_propagation(func: &mut Function) -> bool {
     let analysis_state = analyze_to_fixpoint(&ConstantAnalysis, func);
     let mut code_changed = false;
