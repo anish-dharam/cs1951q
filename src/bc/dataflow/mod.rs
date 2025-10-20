@@ -23,7 +23,7 @@ use crate::bc::types::{Const, Local, LocalIdx, Operand, Rvalue};
 
 use crate::utils::Symbol;
 
-use super::types::{Function, Location, Statement, Terminator};
+use super::types::{AllocLoc, Function, Location, Statement, Terminator, TerminatorKind};
 
 use super::visit::VisitMut;
 
@@ -306,8 +306,7 @@ impl Analysis for AndersenAnalysis {
 
 /// Run the Andersen-style pointer analysis and return the final flow-insensitive mapping
 /// from locals to the set of allocation sites they may point to.
-pub fn pointer_analysis(func: &mut Function) -> PointerDomain {
-    println!("POINTER ANALYSIS\n\n");
+pub fn pointer_analysis(func: &Function) -> PointerDomain {
     let analysis_state = analyze_to_fixpoint(&AndersenAnalysis, func);
 
     // Aggregate all location states into a single flow-insensitive result
@@ -322,13 +321,139 @@ pub fn pointer_analysis(func: &mut Function) -> PointerDomain {
         let _ = result.join(state);
     }
     result
-    // for (local_idx, points_to_set) in result.iter() {
-    //     println!(
-    //         "local_idx: {:?}, points_to_set: {:?}",
-    //         local_idx, points_to_set
-    //     );
-    // }
-    // false
+}
+
+// =====================
+// ESCAPE ANALYSIS
+// =====================
+
+/// Compute the set of allocations that escape the function.
+/// An allocation escapes if it:
+/// 1. Is returned from the function
+/// 2. Is passed as an argument to a function/method call
+/// 3. Is assigned to a parameter variable
+fn compute_escaping_allocations(
+    func: &Function,
+    pointer_domain: &PointerDomain,
+) -> HashSet<Allocation> {
+    let mut escaping = HashSet::new();
+
+    // Helper to get base local from operand
+    let base_local_of_operand = |op: &Operand| -> Option<LocalIdx> {
+        match op {
+            Operand::Place(p) => Some(p.local),
+            _ => None,
+        }
+    };
+
+    // Check all locations in the function
+    for loc in func.body.locations().iter() {
+        match func.body.instr(*loc) {
+            Either::Left(statement) => {
+                // Check assignments to parameters
+                let base_local = statement.place.local;
+                if base_local.index() < func.num_params {
+                    // This is assigning to a parameter - mark all allocations that could flow here as escaping
+                    if let Some(points_to) = pointer_domain.get(&base_local) {
+                        escaping.extend(points_to.iter().copied());
+                    }
+                }
+
+                // Check function/method calls
+                match &statement.rvalue {
+                    Rvalue::Call { f, args } => {
+                        // Check function operand
+                        if let Some(local) = base_local_of_operand(f) {
+                            if let Some(points_to) = pointer_domain.get(&local) {
+                                escaping.extend(points_to.iter().copied());
+                            }
+                        }
+                        // Check argument operands
+                        for arg in args {
+                            if let Some(local) = base_local_of_operand(arg) {
+                                if let Some(points_to) = pointer_domain.get(&local) {
+                                    escaping.extend(points_to.iter().copied());
+                                }
+                            }
+                        }
+                    }
+                    Rvalue::MethodCall { receiver, args, .. } => {
+                        // Check receiver operand
+                        if let Some(local) = base_local_of_operand(receiver) {
+                            if let Some(points_to) = pointer_domain.get(&local) {
+                                escaping.extend(points_to.iter().copied());
+                            }
+                        }
+                        // Check argument operands
+                        for arg in args {
+                            if let Some(local) = base_local_of_operand(arg) {
+                                if let Some(points_to) = pointer_domain.get(&local) {
+                                    escaping.extend(points_to.iter().copied());
+                                }
+                            }
+                        }
+                    }
+                    _ => {} // Other rvalues don't cause escapes
+                }
+            }
+            Either::Right(terminator) => {
+                // Check returns
+                match terminator.kind() {
+                    TerminatorKind::Return(operand) => {
+                        if let Some(local) = base_local_of_operand(operand) {
+                            if let Some(points_to) = pointer_domain.get(&local) {
+                                escaping.extend(points_to.iter().copied());
+                            }
+                        }
+                    }
+                    _ => {} // Other terminators don't cause escapes
+                }
+            }
+        }
+    }
+
+    escaping
+}
+
+/// Stack allocation optimization pass.
+/// Changes AllocLoc from Heap to Stack for allocations that do not escape the function.
+pub fn stack_allocate(func: &mut Function) -> bool {
+    // Run pointer analysis to get the pointer domain (using immutable reference)
+    let pointer_domain = {
+        let func_ref = &*func;
+        pointer_analysis(func_ref)
+    };
+
+    // Compute which allocations escape
+    let escaping_allocations = {
+        let func_ref = &*func;
+        compute_escaping_allocations(func_ref, &pointer_domain)
+    };
+
+    let mut changed = false;
+
+    // Visit all statements and change non-escaping allocations to stack
+    let blocks: Vec<_> = func.body.blocks().collect();
+    for block_idx in blocks {
+        let block = func.body.data_mut(block_idx);
+
+        for (instr_idx, statement) in block.statements.iter_mut().enumerate() {
+            if let Rvalue::Alloc { loc, .. } = &mut statement.rvalue {
+                let allocation = Allocation(Location {
+                    block: block_idx,
+                    instr: instr_idx,
+                });
+
+                // If this allocation doesn't escape, change it to stack
+                if !escaping_allocations.contains(&allocation) && *loc == AllocLoc::Heap {
+                    *loc = AllocLoc::Stack;
+                    changed = true;
+                }
+            }
+        }
+    }
+
+    changed
 }
 
 //                   CONSTANT PROPAGATION ANALYSIS

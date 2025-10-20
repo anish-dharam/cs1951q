@@ -352,7 +352,7 @@ pub enum AllocKind {
 }
 
 /// The location in memory of an object allocated by an [`Rvalue::Alloc`] instruction.
-#[derive(Debug, Clone, Copy, Display, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Display, Serialize)]
 pub enum AllocLoc {
     Stack,
     Heap,
