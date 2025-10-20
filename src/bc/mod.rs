@@ -47,7 +47,8 @@ type Pass = Box<dyn Fn(&mut Function) -> bool>;
 
 /// Run optimization passes to a fixed point.
 fn optimize_func(func: &mut Function) {
-    let passes: Vec<Pass> = vec![Box::new(dead_code), Box::new(constant_propagation)];
+    // let passes: Vec<Pass> = vec![Box::new(dead_code)];
+    let passes: Vec<Pass> = vec![Box::new(constant_propagation), Box::new(dead_code)];
 
     loop {
         let mut changed = false;

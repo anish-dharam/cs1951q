@@ -414,7 +414,29 @@ impl Rvalue {
     /// Returns a vector of all the places used in the rvalue.
     pub fn places(&self) -> SmallVec<[Place; 2]> {
         match self {
-            Rvalue::Operand(op) | Rvalue::Cast { op, .. } => op.as_place().into_iter().collect(),
+            // Rvalue::Operand(op) | Rvalue::Cast { op, .. } => op.as_place().into_iter().collect(),
+            Rvalue::Operand(op) | Rvalue::Cast { op, .. } => {
+                match op.as_place() {
+                    Some(place) => {
+                        // Extract places from projection elements
+                        let mut places: SmallVec<[Place; 2]> = smallvec![place];
+                        for proj in &place.projection {
+                            match proj {
+                                ProjectionElem::Field { .. } => {}
+                                ProjectionElem::ArrayIndex { index, .. } => {
+                                    // Array index uses the index operand as a place
+                                    if let Some(index_place) = index.as_place() {
+                                        places.push(index_place);
+                                    }
+                                }
+                            }
+                        }
+                        places
+                    }
+                    None => smallvec![],
+                }
+            }
+
             Rvalue::Alloc { args, .. } => match args {
                 AllocArgs::Lit(ops) => ops.iter().flat_map(|op| op.as_place()).collect(),
                 AllocArgs::ArrayCopy { value, count } => value

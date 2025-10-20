@@ -6,7 +6,7 @@
 
 use either::Either;
 use indexical::{
-    IndexedDomain, IndexedValue, bitset::bitvec::ArcIndexSet as IndexSet,
+    IndexedDomain, IndexedValue, ToIndex, bitset::bitvec::ArcIndexSet as IndexSet,
     vec::ArcIndexVec as IndexVec,
 };
 use itertools::{any, fold};
@@ -19,7 +19,7 @@ use std::{
 };
 use wasmparser::collections::Set;
 
-use crate::bc::types::{Const, LocalIdx, Operand, Rvalue};
+use crate::bc::types::{Const, Local, LocalIdx, Operand, Rvalue};
 
 use crate::utils::Symbol;
 
@@ -223,7 +223,8 @@ impl JoinSemiLattice for HashMap<LocalIdx, Constant> {
                 }
                 None => {
                     // Variable only exists in other state, Everything should be everywhere
-                    panic!("Variable only exists in other state, every var should be bottom");
+                    // println!("var: {:?} with constant: {:?}", var, other_val);
+                    // panic!("Variable only exists in other state, every var should be bottom");
                 }
             }
         }
@@ -342,31 +343,29 @@ impl Analysis for ConstantAnalysis {
     fn bottom(&self, func: &Function) -> Self::Domain {
         HashMap::from_iter(
             func.locals
-                .iter()
-                .map(|local| (func.locals.index(local), Constant::Bottom))
+                .indices()
+                .map(|local_idx| (local_idx, Constant::Bottom))
                 .collect::<HashMap<_, _>>(),
         )
-        // let domain = HashMap<LocalIdx, Constant>::from_iter(
-        // func.locals
-        //     .iter()
-        //     .map(|local| (func.locals.index(local), Constant::Bottom))
-        //     .collect::<HashMap<_, _>>());
     }
 
     fn handle_statement(&self, state: &mut Self::Domain, statement: &Statement, loc: Location) {
         //helper
-
         match &statement.rvalue {
             super::types::Rvalue::Operand(operand) => match operand {
                 super::types::Operand::Const(c) => {
-                    state.insert(statement.place.local, Constant::Const(c.clone()));
+                    if statement.place.projection.is_empty() {
+                        state.insert(statement.place.local, Constant::Const(c.clone()));
+                    } else {
+                        state.insert(statement.place.local, Constant::Top);
+                    }
                 }
-                super::types::Operand::Place(place) => {
-                    state.insert(
-                        statement.place.local,
-                        state.get(&place.local).unwrap().clone(),
-                    );
-                }
+                super::types::Operand::Place(place) => match state.get(&place.local) {
+                    Some(v) => {
+                        state.insert(statement.place.local, v.clone());
+                    }
+                    None => {}
+                },
                 _ => (),
             },
             super::types::Rvalue::Cast { op, ty } => match op {
@@ -401,11 +400,17 @@ impl Analysis for ConstantAnalysis {
                     _ => None,
                 };
 
-                match (left_const, right_const) {
+                match (left_const.clone(), right_const.clone()) {
                     (Some(c1), Some(c2)) => {
                         state.insert(statement.place.local, fold_constants(state, c1, c2, *op));
                     }
                     _ => {
+                        println!("statement : {}", statement);
+                        println!(
+                            "left_const: {:?}, right_const: {:?}",
+                            left_const.clone(),
+                            right_const.clone()
+                        );
                         panic!("What BinOps are we using on Functions?")
                     }
                 }
@@ -541,7 +546,11 @@ impl Analysis for DeadCodeAnalysis {
     }
 
     fn handle_statement(&self, state: &mut Self::Domain, statement: &Statement, loc: Location) {
-        let def: HashSet<LocalIdx> = HashSet::from([statement.place.local]);
+        let def: HashSet<LocalIdx> = if statement.place.projection.is_empty() {
+            HashSet::from([statement.place.local])
+        } else {
+            HashSet::new()
+        };
 
         let used: HashSet<LocalIdx> = HashSet::from(
             statement
@@ -615,7 +624,6 @@ pub fn dead_code(func: &mut Function) -> bool {
                 .contains(&statement.place.local)
                 && !has_side_effect(statement.clone()))
             {
-                // println!("Eliminating statement: {:?}", statement);
                 code_eliminated = true;
                 block.statements.remove(i);
             }
