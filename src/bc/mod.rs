@@ -3,7 +3,7 @@
 use miette::Result;
 use strum::{Display, EnumString};
 
-use crate::bc::dataflow::{constant_propagation, dead_code, pointer_analysis};
+use crate::bc::dataflow::{constant_propagation, dead_code};
 
 use self::types::{Function, Program};
 

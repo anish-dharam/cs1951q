@@ -306,7 +306,8 @@ impl Analysis for AndersenAnalysis {
 
 /// Run the Andersen-style pointer analysis and return the final flow-insensitive mapping
 /// from locals to the set of allocation sites they may point to.
-pub fn pointer_analysis(func: &mut Function) -> bool {
+pub fn pointer_analysis(func: &mut Function) -> PointerDomain {
+    println!("POINTER ANALYSIS\n\n");
     let analysis_state = analyze_to_fixpoint(&AndersenAnalysis, func);
 
     // Aggregate all location states into a single flow-insensitive result
@@ -320,13 +321,14 @@ pub fn pointer_analysis(func: &mut Function) -> bool {
     for state in analysis_state.iter() {
         let _ = result.join(state);
     }
-    for (local_idx, points_to_set) in result.iter() {
-        println!(
-            "local_idx: {:?}, points_to_set: {:?}",
-            local_idx, points_to_set
-        );
-    }
-    false
+    result
+    // for (local_idx, points_to_set) in result.iter() {
+    //     println!(
+    //         "local_idx: {:?}, points_to_set: {:?}",
+    //         local_idx, points_to_set
+    //     );
+    // }
+    // false
 }
 
 //                   CONSTANT PROPAGATION ANALYSIS
