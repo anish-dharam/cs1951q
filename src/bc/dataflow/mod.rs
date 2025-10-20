@@ -9,7 +9,14 @@ use indexical::{
     IndexedValue, bitset::bitvec::ArcIndexSet as IndexSet, vec::ArcIndexVec as IndexVec,
 };
 use itertools::fold;
-use std::{collections::VecDeque, iter::successors, sync::Arc};
+use std::{
+    collections::{HashSet, VecDeque},
+    iter::successors,
+    sync::Arc,
+};
+use wasmparser::collections::Set;
+
+use crate::bc::types::LocalIdx;
 
 use super::types::{Function, Location, Statement, Terminator};
 
@@ -140,4 +147,57 @@ pub fn analyze_to_fixpoint<A: Analysis>(analysis: &A, func: &Function) -> Analys
         Direction::Forward => in_states,
         Direction::Backward => out_states,
     }
+}
+
+struct DeadCodeAnalysis;
+
+impl JoinSemiLattice for HashSet<LocalIdx> {
+    fn join(&mut self, other: &Self) -> bool {
+        let original_size = self.len();
+        self.extend(other.iter().cloned());
+        self.len() > original_size
+    }
+}
+
+impl Analysis for DeadCodeAnalysis {
+    type Domain = HashSet<LocalIdx>;
+
+    const DIRECTION: Direction = Direction::Backward;
+
+    fn bottom(&self, func: &Function) -> Self::Domain {
+        HashSet::new()
+    }
+
+    fn handle_statement(&self, state: &mut Self::Domain, statement: &Statement, loc: Location) {
+        let def: HashSet<LocalIdx> = HashSet::from([statement.place.local]);
+        let used: HashSet<LocalIdx> = HashSet::from(
+            statement
+                .rvalue
+                .places()
+                .iter()
+                .map(|p| p.local)
+                .collect::<HashSet<LocalIdx>>(),
+        );
+
+        *state = state.difference(&def).cloned().collect();
+        *state = state.union(&used).cloned().collect::<HashSet<LocalIdx>>();
+    }
+
+    fn handle_terminator(&self, state: &mut Self::Domain, terminator: &Terminator, loc: Location) {
+        match terminator.kind() {
+            super::types::TerminatorKind::Return(operand) => match operand {
+                crate::bc::types::Operand::Const(_) => (),
+                crate::bc::types::Operand::Place(place) => {
+                    state.insert(place.local);
+                }
+                crate::bc::types::Operand::Func { f, ty } => (),
+            },
+            _ => (),
+        }
+    }
+}
+
+pub fn dead_code(func: &mut Function) -> bool {
+    true
+    // return true if code was eliminated
 }

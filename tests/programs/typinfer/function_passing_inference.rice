@@ -10,25 +10,9 @@ fn multiply_by_two(x: int) -> int {
     x * 2
 }
 
-fn string_length(s: string) -> int {
-    let len = 0 in
-    let i = 0 in
-    while i < 10 {
-        if s[i] != "" {
-            len := len + 1
-        } else {
-            ()
-        };
-        i := i + 1
-    };
-    len
-}
-
 fn main() {
     let result1 = apply_function(add_one, 5) in
     let result2 = apply_function(multiply_by_two, 7) in
-    let result3 = apply_function(string_length, "Hello") in
     println(int_to_string(result1));
-    println(int_to_string(result2));
-    println(int_to_string(result3))
+    println(int_to_string(result2))
 }
