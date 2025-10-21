@@ -19,14 +19,14 @@ use std::{
 };
 use wasmparser::collections::Set;
 
-use crate::bc::types::{Const, Local, LocalIdx, Operand, Rvalue};
+use crate::bc::types::{
+    AllocArgs, AllocKind, AllocLoc, Const, Local, LocalIdx, Operand, ProjectionElem, Rvalue,
+    TerminatorKind,
+};
 
 use crate::utils::Symbol;
 
-use super::types::{
-    AllocArgs, AllocKind, AllocLoc, Function, Location, Place, ProjectionElem, Statement,
-    Terminator, TerminatorKind,
-};
+use super::types::{Function, Location, Statement, Terminator};
 
 use super::visit::VisitMut;
 
@@ -160,7 +160,7 @@ pub fn analyze_to_fixpoint<A: Analysis>(analysis: &A, func: &Function) -> Analys
 }
 
 // =====================
-// ANDERSEN POINTER ANALYSIS (flow-insensitive, field-sensitive for tuples/structs)
+// ANDERSEN POINTER ANALYSIS (flow-insensitive, field-sensitive for tuples)
 // =====================
 
 /// Allocation site represented by the `Location` of the `Rvalue::Alloc` statement.
@@ -187,9 +187,13 @@ impl FieldPath {
     }
 }
 
-/// Allocation site with field path - represents a specific field of an allocation.
+/// Allocation site with field path
 type AllocationSite = (Allocation, FieldPath);
+
+/// Points-to set for a specific allocation site
 type PointsToSet = HashSet<AllocationSite>;
+
+/// Pointer domain for a function
 type PointerDomain = HashMap<(LocalIdx, FieldPath), PointsToSet>;
 
 impl JoinSemiLattice for PointerDomain {
@@ -210,7 +214,6 @@ impl JoinSemiLattice for PointerDomain {
 struct AndersenAnalysis;
 
 impl AndersenAnalysis {
-    #[inline]
     fn base_local_of_operand(op: &Operand) -> Option<LocalIdx> {
         match op {
             Operand::Place(p) => Some(p.local),
@@ -228,7 +231,7 @@ impl AndersenAnalysis {
                             path = path.extend(*index);
                         }
                         ProjectionElem::ArrayIndex { .. } => {
-                            // Arrays are field-insensitive, so we don't extend the path
+                            // Arrays field-insensitive, so we don't extend the path
                             // This means arr[i] and arr[j] are treated the same
                         }
                     }
@@ -239,14 +242,12 @@ impl AndersenAnalysis {
         }
     }
 
-    #[inline]
     fn union_into(dst: &mut PointsToSet, src: &PointsToSet) -> bool {
         let before = dst.len();
         dst.extend(src.iter().cloned());
         dst.len() != before
     }
 
-    #[inline]
     fn get_points_to(
         state: &PointerDomain,
         local: LocalIdx,
@@ -258,7 +259,6 @@ impl AndersenAnalysis {
             .unwrap_or_default()
     }
 
-    #[inline]
     fn set_points_to(
         state: &mut PointerDomain,
         local: LocalIdx,
@@ -294,25 +294,31 @@ impl Analysis for AndersenAnalysis {
                 // The destination points to the allocation at the root level
                 let mut root_points_to = PointsToSet::new();
                 root_points_to.insert((allocation, FieldPath::empty()));
-                AndersenAnalysis::set_points_to(state, dst_local, dst_field_path, root_points_to);
+                AndersenAnalysis::set_points_to(
+                    state,
+                    dst_local,
+                    dst_field_path.clone(),
+                    root_points_to,
+                );
 
-                // For tuples and structs, also set up field-level points-to relationships
+                // For tuples, also set up field-level points-to relationships
                 match kind {
-                    AllocKind::Tuple | AllocKind::Struct => {
+                    AllocKind::Tuple => {
                         if let AllocArgs::Lit(operands) = args {
                             for (field_idx, operand) in operands.iter().enumerate() {
                                 if let Some(src_local) =
                                     AndersenAnalysis::base_local_of_operand(operand)
                                 {
-                                    // Get what the source points to
+                                    // what the source tuple literal arg
                                     let src_points_to = AndersenAnalysis::get_points_to(
                                         state,
                                         src_local,
                                         &FieldPath::empty(),
                                     );
 
-                                    // Each field of the allocation points to what the corresponding operand points to
-                                    let field_path = FieldPath::empty().extend(field_idx);
+                                    // each field of the allocation points to what the corresponding operand points to
+                                    // field path should be relative to the destination field path
+                                    let field_path = dst_field_path.extend(field_idx);
                                     AndersenAnalysis::set_points_to(
                                         state,
                                         dst_local,
@@ -323,8 +329,9 @@ impl Analysis for AndersenAnalysis {
                             }
                         }
                     }
-                    AllocKind::Array => {
-                        // Arrays are field-insensitive, so we don't set up field-level relationships
+                    AllocKind::Struct | AllocKind::Array => {
+                        // For now, we only care about tuples for field-sensitivity
+                        // Structs and arrays are treated as field-insensitive
                     }
                 }
             }
@@ -336,9 +343,31 @@ impl Analysis for AndersenAnalysis {
                     AndersenAnalysis::set_points_to(
                         state,
                         dst_local,
-                        dst_field_path,
+                        dst_field_path.clone(),
                         src_points_to,
                     );
+
+                    // If both source and destination are root-level (no field paths),
+                    // copy all field-level points-to sets from source to destination
+                    if src_field_path.is_empty() && dst_field_path.is_empty() {
+                        // Collect field-level points-to sets to copy
+                        let field_sets: Vec<_> = state
+                            .iter()
+                            .filter(|((local, field_path), _)| {
+                                *local == src_local && !field_path.is_empty()
+                            })
+                            .map(|((_, field_path), points_to)| {
+                                (field_path.clone(), points_to.clone())
+                            })
+                            .collect();
+
+                        // Copy all field-level points-to sets from src_local to dst_local
+                        for (field_path, points_to) in field_sets {
+                            AndersenAnalysis::set_points_to(
+                                state, dst_local, field_path, points_to,
+                            );
+                        }
+                    }
                 }
             }
             Rvalue::Cast { op, .. } => {
@@ -416,18 +445,17 @@ impl Analysis for AndersenAnalysis {
 
                 // Build the union of all points-to sets
                 let mut total: PointsToSet = PointsToSet::new();
-                for l in &participants {
-                    if let Some(s) = state.get(l) {
-                        total.extend(s.iter().cloned());
-                    }
+                for (l, field_path) in &participants {
+                    let points_to = AndersenAnalysis::get_points_to(state, *l, field_path);
+                    total.extend(points_to.iter().cloned());
                 }
 
                 // Write back to all participants
-                for l in participants {
-                    AndersenAnalysis::union_into(state.entry(l).or_default(), &total);
+                for (l, field_path) in participants {
+                    AndersenAnalysis::set_points_to(state, l, field_path, total.clone());
                 }
             }
-            _ => {} //binop,
+            _ => {} // binop, etc. - no pointer flow
         }
     }
 
@@ -437,6 +465,7 @@ impl Analysis for AndersenAnalysis {
         _terminator: &Terminator,
         _loc: Location,
     ) {
+        // No pointer flow through terminators
     }
 }
 
@@ -466,7 +495,7 @@ pub fn pointer_analysis(func: &Function) -> PointerDomain {
 fn compute_escaping_allocations(
     func: &Function,
     pointer_domain: &PointerDomain,
-) -> HashSet<AllocationSite> {
+) -> HashSet<Allocation> {
     let mut escaping = HashSet::new();
 
     // Helper to get base local and field path from operand
@@ -529,6 +558,38 @@ fn compute_escaping_allocations(
                             }
                         }
                     }
+                    Rvalue::Alloc { args, .. } => {
+                        // Check if any operands in the allocation escape
+                        match args {
+                            AllocArgs::Lit(ops) => {
+                                for op in ops {
+                                    if let Some((local, field_path)) = operand_info(op) {
+                                        if let Some(points_to) =
+                                            pointer_domain.get(&(local, field_path))
+                                        {
+                                            escaping.extend(points_to.iter().cloned());
+                                        }
+                                    }
+                                }
+                            }
+                            AllocArgs::ArrayCopy { value, count } => {
+                                if let Some((local, field_path)) = operand_info(value) {
+                                    if let Some(points_to) =
+                                        pointer_domain.get(&(local, field_path))
+                                    {
+                                        escaping.extend(points_to.iter().cloned());
+                                    }
+                                }
+                                if let Some((local, field_path)) = operand_info(count) {
+                                    if let Some(points_to) =
+                                        pointer_domain.get(&(local, field_path))
+                                    {
+                                        escaping.extend(points_to.iter().cloned());
+                                    }
+                                }
+                            }
+                        }
+                    }
                     _ => {} // Other rvalues don't cause escapes
                 }
             }
@@ -536,7 +597,6 @@ fn compute_escaping_allocations(
                 // Check returns
                 match terminator.kind() {
                     TerminatorKind::Return(operand) => {
-                        println!("return escape");
                         if let Some((local, field_path)) = operand_info(operand) {
                             if let Some(points_to) = pointer_domain.get(&(local, field_path)) {
                                 escaping.extend(points_to.iter().cloned());
@@ -549,7 +609,12 @@ fn compute_escaping_allocations(
         }
     }
 
-    escaping
+    // Mark entire allocations as escaping if any field of them escapes
+    let mut escaping_allocations = HashSet::new();
+    for (allocation, _) in &escaping {
+        escaping_allocations.insert(*allocation);
+    }
+    escaping_allocations
 }
 
 /// Stack allocation optimization pass.
@@ -562,7 +627,7 @@ pub fn stack_allocate(func: &mut Function) -> bool {
     };
 
     // Compute which allocation sites escape
-    let escaping_allocation_sites = {
+    let escaping_allocations = {
         let func_ref = &*func;
         compute_escaping_allocations(func_ref, &pointer_domain)
     };
@@ -581,14 +646,8 @@ pub fn stack_allocate(func: &mut Function) -> bool {
                     instr: instr_idx,
                 });
 
-                // Check if any field path of this allocation escapes
-                let mut allocation_escapes = false;
-                for (escaping_alloc, _) in &escaping_allocation_sites {
-                    if *escaping_alloc == allocation {
-                        allocation_escapes = true;
-                        break;
-                    }
-                }
+                // Check if this allocation escapes
+                let allocation_escapes = escaping_allocations.contains(&allocation);
 
                 // If this allocation doesn't escape, change it to stack
                 if !allocation_escapes && *loc == AllocLoc::Heap {
@@ -870,6 +929,21 @@ impl Analysis for ConstantAnalysis {
     }
 }
 
+// pub fn constant_propagation(func: &mut Function) -> bool {
+//     let analysis_state = analyze_to_fixpoint(&ConstantAnalysis, func);
+//     let mut code_changed = false;
+
+//     //iterate through basic blocks
+//     for block_idx in func.body.clone().blocks() {
+//         let block = func.body.data_mut(block_idx);
+
+//         for i in (0..block.statements.len()) {
+//             let statement = block.statements.get(i).unwrap();
+//         }
+//     }
+
+//     code_changed
+// }
 pub fn constant_propagation(func: &mut Function) -> bool {
     let analysis_state = analyze_to_fixpoint(&ConstantAnalysis, func);
     let mut code_changed = false;

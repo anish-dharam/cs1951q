@@ -575,7 +575,28 @@ impl CodegenFunc<'_, '_> {
                     }
 
                     match loc {
-                        bc::AllocLoc::Stack => unimplemented!(),
+                        bc::AllocLoc::Stack => {
+                            // For now, treat stack allocations the same as heap allocations in JIT
+                            // TODO: Implement proper stack allocation in JIT runtime
+                            match kind {
+                                bc::AllocKind::Tuple => {
+                                    let ty_idx = self.module.tuple_ty_idx(ty);
+                                    instrs.struct_new(ty_idx);
+                                }
+                                bc::AllocKind::Struct => {
+                                    let ty_idx = self.module.struct_ty_idx(ty);
+                                    instrs.struct_new(ty_idx);
+                                }
+                                bc::AllocKind::Array => {
+                                    let bc::TypeKind::Array(element_ty) = ty.kind() else {
+                                        panic!("{ty:?} is not an array")
+                                    };
+                                    let element_val_ty = self.module.gen_ty(*element_ty);
+                                    let ty_idx = self.module.array_ty_idx(element_val_ty);
+                                    instrs.array_new_fixed(ty_idx, ops.len() as u32);
+                                }
+                            }
+                        }
                         bc::AllocLoc::Heap => match kind {
                             bc::AllocKind::Tuple => {
                                 let ty_idx = self.module.tuple_ty_idx(ty);

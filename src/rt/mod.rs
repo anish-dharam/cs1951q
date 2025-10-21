@@ -38,9 +38,9 @@ use indexical::{IndexicalIteratorExt, map::DenseArcIndexMap as IndexMap};
 use itertools::Itertools;
 use log::debug;
 use wasmtime::{
-    ArrayRefPre, AsContext, AsContextMut, Caller, Config, Engine, FieldType, Func, FuncType,
-    HeapType, Linker, Module, Mutability, RefType, Rooted, StorageType, Store, StoreContext,
-    StoreContextMut, StructRef, StructRefPre, StructType, Val, ValType,
+    ArrayRefPre, AsContext, AsContextMut, Caller, Config, Engine, ExternRef, FieldType, Func,
+    FuncType, HeapType, Linker, Module, Mutability, RefType, Rooted, StorageType, Store,
+    StoreContext, StoreContextMut, StructRef, StructRefPre, StructType, Val, ValType,
 };
 
 use self::{codegen::Import, conversions::Wasmable};
@@ -555,6 +555,7 @@ impl WasmFunc for bc::Function {
             pc: bc::Location::START,
             store: caller.as_context_mut(),
             ret_val: OnceCell::new(),
+            stack_data: Vec::new(),
         };
         frame.eval()
     }
@@ -568,6 +569,20 @@ impl WasmFunc for bc::Function {
     }
 }
 
+/// A stack-allocated value stored in the frame.
+#[derive(Clone)]
+enum StackValue {
+    Tuple(Vec<Val>),
+    Array(Vec<Val>),
+}
+
+/// A reference to a stack-allocated value.
+#[derive(Clone, Copy, Debug)]
+enum StackRef {
+    Tuple(usize), // index into stack_data
+    Array(usize), // index into stack_data
+}
+
 /// A stack frame for an executing function.
 struct Frame<'a> {
     function: &'a bc::Function,
@@ -576,6 +591,7 @@ struct Frame<'a> {
     pc: bc::Location,
     store: StoreContextMut<'a, ()>,
     ret_val: OnceCell<Val>,
+    stack_data: Vec<StackValue>, // Stack-allocated data
 }
 
 /// A location in memory that can be described by a [`bc::Place`].
@@ -589,6 +605,12 @@ enum MemPlace {
 
     /// An element of a heap-allocated array.
     ArrayElement(Rooted<wasmtime::ArrayRef>, u32),
+
+    /// A field of a stack-allocated tuple.
+    StackField(StackRef, usize),
+
+    /// An element of a stack-allocated array.
+    StackElement(StackRef, u32),
 }
 
 impl Frame<'_> {
@@ -634,6 +656,57 @@ impl Frame<'_> {
         }
     }
 
+    /// Allocate a tuple on the stack.
+    fn alloc_stack_tuple(&mut self, fields: Vec<Val>) -> Result<Val> {
+        let index = self.stack_data.len();
+        self.stack_data.push(StackValue::Tuple(fields));
+        let extern_ref = ExternRef::new(store!(self), StackRef::Tuple(index))?;
+        Ok(Val::from(extern_ref))
+    }
+
+    /// Allocate an array on the stack.
+    fn alloc_stack_array(&mut self, elements: Vec<Val>) -> Result<Val> {
+        let index = self.stack_data.len();
+        self.stack_data.push(StackValue::Array(elements));
+        let extern_ref = ExternRef::new(store!(self), StackRef::Array(index))?;
+        Ok(Val::from(extern_ref))
+    }
+
+    /// Get a value from a stack reference.
+    fn get_stack_value(&self, stack_ref: &StackRef) -> Result<&StackValue> {
+        let index = match stack_ref {
+            StackRef::Tuple(i) | StackRef::Array(i) => *i,
+        };
+        self.stack_data
+            .get(index)
+            .ok_or_else(|| anyhow::anyhow!("Invalid stack reference"))
+    }
+
+    /// Get a mutable value from a stack reference.
+    fn get_stack_value_mut(&mut self, stack_ref: &StackRef) -> Result<&mut StackValue> {
+        let index = match stack_ref {
+            StackRef::Tuple(i) | StackRef::Array(i) => *i,
+        };
+        self.stack_data
+            .get_mut(index)
+            .ok_or_else(|| anyhow::anyhow!("Invalid stack reference"))
+    }
+
+    /// Extract a stack reference from a Val.
+    fn as_stack_ref(&mut self, val: &Val) -> Option<StackRef> {
+        match val {
+            Val::ExternRef(Some(ext)) => {
+                // Try to downcast the ExternRef to StackRef
+                if let Ok(Some(data)) = ext.data(store!(self)) {
+                    data.downcast_ref::<StackRef>().copied()
+                } else {
+                    None
+                }
+            }
+            _ => None,
+        }
+    }
+
     fn eval_mem_place(&mut self, mem_place: MemPlace) -> Result<Val> {
         match mem_place {
             MemPlace::Local(local) => Ok(*self
@@ -649,6 +722,29 @@ impl Frame<'_> {
                     bail!("array index {} out of bounds (length {})", i, len);
                 }
                 array_ref.get(store!(self), i)
+            }
+            MemPlace::StackField(stack_ref, i) => {
+                let stack_value = self.get_stack_value(&stack_ref)?;
+                match stack_value {
+                    StackValue::Tuple(fields) => fields.get(i).cloned().ok_or_else(|| {
+                        anyhow::anyhow!("Stack tuple field index {} out of bounds", i)
+                    }),
+                    StackValue::Array(_) => {
+                        bail!("Cannot access field {} on stack array", i)
+                    }
+                }
+            }
+            MemPlace::StackElement(stack_ref, i) => {
+                let stack_value = self.get_stack_value(&stack_ref)?;
+                match stack_value {
+                    StackValue::Array(elements) => elements
+                        .get(i as usize)
+                        .cloned()
+                        .ok_or_else(|| anyhow::anyhow!("Stack array index {} out of bounds", i)),
+                    StackValue::Tuple(_) => {
+                        bail!("Cannot access element {} on stack tuple", i)
+                    }
+                }
             }
         }
     }
@@ -683,14 +779,25 @@ impl Frame<'_> {
             let val = self.eval_mem_place(mem_place)?;
             mem_place = match elem {
                 bc::ProjectionElem::Field { index, .. } => {
-                    let struct_ref = self.struct_ref(val)?;
-                    MemPlace::StructField(struct_ref, *index)
+                    // Check if this is a stack reference
+                    if let Some(stack_ref) = self.as_stack_ref(&val) {
+                        MemPlace::StackField(stack_ref, *index)
+                    } else {
+                        let struct_ref = self.struct_ref(val)?;
+                        MemPlace::StructField(struct_ref, *index)
+                    }
                 }
                 bc::ProjectionElem::ArrayIndex { index, .. } => {
-                    let array_ref = self.array_ref(val)?;
                     let index_val = self.eval_operand(index)?;
                     let index_int = from_val!(i32, self, index_val) as u32;
-                    MemPlace::ArrayElement(array_ref, index_int)
+
+                    // Check if this is a stack reference
+                    if let Some(stack_ref) = self.as_stack_ref(&val) {
+                        MemPlace::StackElement(stack_ref, index_int)
+                    } else {
+                        let array_ref = self.array_ref(val)?;
+                        MemPlace::ArrayElement(array_ref, index_int)
+                    }
                 }
             }
         }
@@ -714,6 +821,34 @@ impl Frame<'_> {
                     bail!("array index {} out of bounds (length {})", i, len);
                 }
                 array_ref.set(store!(self), i, value)?;
+            }
+            MemPlace::StackField(stack_ref, i) => {
+                let stack_value = self.get_stack_value_mut(&stack_ref)?;
+                match stack_value {
+                    StackValue::Tuple(fields) => {
+                        if i >= fields.len() {
+                            bail!("Stack tuple field index {} out of bounds", i);
+                        }
+                        fields[i] = value;
+                    }
+                    StackValue::Array(_) => {
+                        bail!("Cannot assign to field {} on stack array", i);
+                    }
+                }
+            }
+            MemPlace::StackElement(stack_ref, i) => {
+                let stack_value = self.get_stack_value_mut(&stack_ref)?;
+                match stack_value {
+                    StackValue::Array(elements) => {
+                        if i as usize >= elements.len() {
+                            bail!("Stack array index {} out of bounds", i);
+                        }
+                        elements[i as usize] = value;
+                    }
+                    StackValue::Tuple(_) => {
+                        bail!("Cannot assign to element {} on stack tuple", i);
+                    }
+                }
             }
         }
         Ok(())
@@ -828,30 +963,49 @@ impl Frame<'_> {
                 self.rt.alloc_tuple(store!(self), vec![func, env])?
             }
 
-            bc::Rvalue::Alloc {
-                kind,
-                args,
-                loc: _loc,
-            } => match args {
+            bc::Rvalue::Alloc { kind, args, loc } => match args {
                 bc::AllocArgs::Lit(ops) => {
                     let fields = ops
                         .iter()
                         .map(|el| self.eval_operand(el))
                         .collect::<Result<Vec<_>>>()?;
 
-                    match kind {
-                        bc::AllocKind::Tuple | bc::AllocKind::Struct => {
-                            self.rt.alloc_tuple(store!(self), fields)?
-                        }
-                        bc::AllocKind::Array => self.rt.alloc_array(store!(self), fields)?,
+                    match loc {
+                        bc::AllocLoc::Stack => match kind {
+                            bc::AllocKind::Tuple | bc::AllocKind::Struct => {
+                                self.alloc_stack_tuple(fields)?
+                            }
+                            bc::AllocKind::Array => self.alloc_stack_array(fields)?,
+                        },
+                        bc::AllocLoc::Heap => match kind {
+                            bc::AllocKind::Tuple | bc::AllocKind::Struct => {
+                                self.rt.alloc_tuple(store!(self), fields)?
+                            }
+                            bc::AllocKind::Array => self.rt.alloc_array(store!(self), fields)?,
+                        },
                     }
                 }
                 bc::AllocArgs::ArrayCopy { value, count } => {
                     let value_val = self.eval_operand(value)?;
                     let count_val = self.eval_operand(count)?;
                     let count_int = from_val!(i32, self, count_val) as u32;
-                    self.rt
-                        .alloc_array_copy(store!(self), value_val, count_int)?
+
+                    match loc {
+                        bc::AllocLoc::Stack => {
+                            // For stack allocation, we need to copy the elements manually
+                            let mut elements = Vec::new();
+                            for _ in 0..count_int {
+                                // This is a simplified implementation - in practice we'd need
+                                // to handle different element types properly
+                                elements.push(value_val.clone());
+                            }
+                            self.alloc_stack_array(elements)?
+                        }
+                        bc::AllocLoc::Heap => {
+                            self.rt
+                                .alloc_array_copy(store!(self), value_val, count_int)?
+                        }
+                    }
                 }
             },
 
