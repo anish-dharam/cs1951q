@@ -524,7 +524,7 @@ fn compute_escaping_allocations(
                     }
                 }
 
-                // Check function/method calls
+                // Check function/method calls and allocations
                 match &statement.rvalue {
                     Rvalue::Call { f, args } => {
                         // Check function operand
@@ -559,36 +559,8 @@ fn compute_escaping_allocations(
                         }
                     }
                     Rvalue::Alloc { args, .. } => {
-                        // Check if any operands in the allocation escape
-                        match args {
-                            AllocArgs::Lit(ops) => {
-                                for op in ops {
-                                    if let Some((local, field_path)) = operand_info(op) {
-                                        if let Some(points_to) =
-                                            pointer_domain.get(&(local, field_path))
-                                        {
-                                            escaping.extend(points_to.iter().cloned());
-                                        }
-                                    }
-                                }
-                            }
-                            AllocArgs::ArrayCopy { value, count } => {
-                                if let Some((local, field_path)) = operand_info(value) {
-                                    if let Some(points_to) =
-                                        pointer_domain.get(&(local, field_path))
-                                    {
-                                        escaping.extend(points_to.iter().cloned());
-                                    }
-                                }
-                                if let Some((local, field_path)) = operand_info(count) {
-                                    if let Some(points_to) =
-                                        pointer_domain.get(&(local, field_path))
-                                    {
-                                        escaping.extend(points_to.iter().cloned());
-                                    }
-                                }
-                            }
-                        }
+                        // Only mark operands as escaping if this allocation itself escapes
+                        // We'll handle this in a second pass after we know which allocations escape
                     }
                     _ => {} // Other rvalues don't cause escapes
                 }
@@ -605,6 +577,67 @@ fn compute_escaping_allocations(
                     }
                     _ => {} // Other terminators don't cause escapes
                 }
+            }
+        }
+    }
+
+    // Second pass: propagate escape information through allocations
+    // If an allocation escapes, then all allocations used in its operands also escape
+    let mut changed = true;
+    while changed {
+        changed = false;
+        for loc in func.body.locations().iter() {
+            match func.body.instr(*loc) {
+                Either::Left(statement) => {
+                    if let Rvalue::Alloc { args, .. } = &statement.rvalue {
+                        let allocation = Allocation(*loc);
+                        if escaping.contains(&(allocation, FieldPath::empty())) {
+                            // This allocation escapes, so mark all its operands as escaping
+                            match args {
+                                AllocArgs::Lit(ops) => {
+                                    for op in ops {
+                                        if let Some((local, field_path)) = operand_info(op) {
+                                            if let Some(points_to) =
+                                                pointer_domain.get(&(local, field_path))
+                                            {
+                                                let before_len = escaping.len();
+                                                escaping.extend(points_to.iter().cloned());
+                                                if escaping.len() > before_len {
+                                                    changed = true;
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                                AllocArgs::ArrayCopy { value, count } => {
+                                    if let Some((local, field_path)) = operand_info(value) {
+                                        if let Some(points_to) =
+                                            pointer_domain.get(&(local, field_path))
+                                        {
+                                            let before_len = escaping.len();
+                                            escaping.extend(points_to.iter().cloned());
+                                            if escaping.len() > before_len {
+                                                changed = true;
+                                            }
+                                        }
+                                    }
+                                    if let Some((local, field_path)) = operand_info(count) {
+                                        if let Some(points_to) =
+                                            pointer_domain.get(&(local, field_path))
+                                        {
+                                            let before_len = escaping.len();
+                                            escaping.extend(points_to.iter().cloned());
+                                            if escaping.len() > before_len {
+                                                changed = true;
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                Either::Right(_) => {}
             }
         }
     }
