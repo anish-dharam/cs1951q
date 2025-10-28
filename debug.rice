@@ -1,5 +1,11 @@
+fn rec(n: int) -> int {
+  if (true) {
+    0
+  } else {
+rec(0)
+  }
+}
+
 fn main() {
-  println(int(1 + 1)) ;
-  let y = if 1 || 2 {3} else {4} in
-  println(int_to_string(y))
+  println(int_to_string(rec(4)))
 }
