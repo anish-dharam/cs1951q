@@ -1155,7 +1155,7 @@ impl Analysis for DeadCodeAnalysis {
 
 fn has_side_effect(statement: Statement) -> bool {
     any(statement.place.projection.clone(), |p| match p {
-        crate::bc::types::ProjectionElem::Field { index, ty } => false,
+        crate::bc::types::ProjectionElem::Field { index, ty } => true,
         crate::bc::types::ProjectionElem::ArrayIndex { index, ty } => true,
     }) || match statement.rvalue {
         super::types::Rvalue::Operand(op) => match op {
