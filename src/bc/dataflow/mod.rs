@@ -15,6 +15,7 @@ use std::{
     cmp::Reverse,
     collections::{HashMap, HashSet, VecDeque},
     iter::successors,
+    str::FromStr,
     sync::Arc,
 };
 use wasmparser::collections::Set;
@@ -496,7 +497,7 @@ impl Analysis for AndersenAnalysis {
 
 /// Run the Andersen-style pointer analysis and return the final flow-insensitive mapping
 /// from locals to the set of allocation sites they may point to.
-pub fn pointer_analysis(func: &Function) -> PointerDomain {
+pub fn concrete_pointer_analysis(func: &Function) -> PointerDomain {
     pointer_analysis_with_context(func, None)
 }
 
@@ -692,8 +693,17 @@ pub fn stack_allocate(func: &mut Function) -> bool {
     // Run pointer analysis to get the pointer domain (using immutable reference)
     let pointer_domain = {
         let func_ref = &*func;
-        pointer_analysis(func_ref)
+        concrete_pointer_analysis(func_ref)
     };
+
+    for (local, field_path) in pointer_domain.keys() {
+        println!("local: {:?}, field_path: {:?}", local, field_path);
+    }
+    for (allocation, points_to) in pointer_domain.iter() {
+        println!("allocation: {:?}, points_to: {:?}", allocation, points_to);
+    }
+
+    println!("tdone with function: {:?}\n\n", func.name);
 
     // Compute which allocation sites escape
     let escaping_allocations = {
