@@ -163,9 +163,15 @@ pub fn analyze_to_fixpoint<A: Analysis>(analysis: &A, func: &Function) -> Analys
 // ANDERSEN POINTER ANALYSIS (flow-insensitive, field-sensitive for tuples)
 // =====================
 
-/// Allocation site represented by the `Location` of the `Rvalue::Alloc` statement.
+/// Represents either a concrete allocation site or an abstract parameter allocation
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub struct Allocation(pub Location);
+pub enum MemLoc {
+    /// Concrete allocation at a specific location in the function body
+    Concrete(Location),
+    /// Abstract allocation representing a function parameter
+    /// Symbol is the function name, usize is the parameter index
+    Abstract(Symbol, usize),
+}
 
 /// Field path representing a sequence of field accesses (e.g., [0, 1] for x.0.1).
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
@@ -188,13 +194,13 @@ impl FieldPath {
 }
 
 /// Allocation site with field path
-type AllocationSite = (Allocation, FieldPath);
+pub type AllocationSite = (MemLoc, FieldPath);
 
 /// Points-to set for a specific allocation site
-type PointsToSet = HashSet<AllocationSite>;
+pub type PointsToSet = HashSet<AllocationSite>;
 
 /// Pointer domain for a function
-type PointerDomain = HashMap<(LocalIdx, FieldPath), PointsToSet>;
+pub type PointerDomain = HashMap<(LocalIdx, FieldPath), PointsToSet>;
 
 impl JoinSemiLattice for PointerDomain {
     fn join(&mut self, other: &Self) -> bool {
@@ -211,7 +217,10 @@ impl JoinSemiLattice for PointerDomain {
     }
 }
 
-struct AndersenAnalysis;
+struct AndersenAnalysis {
+    /// Optional map from parameter index to whether it should be treated as abstract
+    param_context: Option<HashSet<usize>>,
+}
 
 impl AndersenAnalysis {
     fn base_local_of_operand(op: &Operand) -> Option<LocalIdx> {
@@ -277,9 +286,25 @@ impl Analysis for AndersenAnalysis {
     const DIRECTION: Direction = Direction::Forward;
 
     fn bottom(&self, func: &Function) -> Self::Domain {
-        // For field-sensitive analysis, we start with empty state
-        // Field paths will be created on-demand as we encounter projections
-        HashMap::new()
+        let mut state = HashMap::new();
+
+        // If we have a param context, initialize parameters as abstract allocations
+        if let Some(param_indices) = &self.param_context {
+            for param_idx in param_indices {
+                if *param_idx < func.num_params {
+                    let local_idx = LocalIdx::from_usize(*param_idx);
+
+                    // Create abstract allocation for this parameter
+                    let abstract_alloc = MemLoc::Abstract(func.name, *param_idx);
+                    let mut points_to = PointsToSet::new();
+                    points_to.insert((abstract_alloc, FieldPath::empty()));
+
+                    state.insert((local_idx, FieldPath::empty()), points_to);
+                }
+            }
+        }
+
+        state
     }
 
     fn handle_statement(&self, state: &mut Self::Domain, statement: &Statement, loc: Location) {
@@ -289,7 +314,7 @@ impl Analysis for AndersenAnalysis {
 
         match &statement.rvalue {
             Rvalue::Alloc { kind, args, .. } => {
-                let allocation = Allocation(loc);
+                let allocation = MemLoc::Concrete(loc);
 
                 // The destination points to the allocation at the root level
                 let mut root_points_to = PointsToSet::new();
@@ -472,11 +497,22 @@ impl Analysis for AndersenAnalysis {
 /// Run the Andersen-style pointer analysis and return the final flow-insensitive mapping
 /// from locals to the set of allocation sites they may point to.
 pub fn pointer_analysis(func: &Function) -> PointerDomain {
-    let analysis_state = analyze_to_fixpoint(&AndersenAnalysis, func);
+    pointer_analysis_with_context(func, None)
+}
+
+/// Run pointer analysis with an optional context specifying which parameters
+/// should be treated as abstract allocations
+pub fn pointer_analysis_with_context(
+    func: &Function,
+    abstract_params: Option<HashSet<usize>>,
+) -> PointerDomain {
+    let analysis = AndersenAnalysis {
+        param_context: abstract_params,
+    };
+    let analysis_state = analyze_to_fixpoint(&analysis, func);
 
     // Aggregate all location states into a single flow-insensitive result
     let mut result: PointerDomain = HashMap::new();
-
     for state in analysis_state.iter() {
         let _ = result.join(state);
     }
@@ -495,7 +531,7 @@ pub fn pointer_analysis(func: &Function) -> PointerDomain {
 fn compute_escaping_allocations(
     func: &Function,
     pointer_domain: &PointerDomain,
-) -> HashSet<Allocation> {
+) -> HashSet<MemLoc> {
     let mut escaping = HashSet::new();
 
     // Helper to get base local and field path from operand
@@ -590,7 +626,7 @@ fn compute_escaping_allocations(
             match func.body.instr(*loc) {
                 Either::Left(statement) => {
                     if let Rvalue::Alloc { args, .. } = &statement.rvalue {
-                        let allocation = Allocation(*loc);
+                        let allocation = MemLoc::Concrete(*loc);
                         if escaping.contains(&(allocation, FieldPath::empty())) {
                             // This allocation escapes, so mark all its operands as escaping
                             match args {
@@ -643,7 +679,7 @@ fn compute_escaping_allocations(
     }
 
     // Mark entire allocations as escaping if any field of them escapes
-    let mut escaping_allocations = HashSet::new();
+    let mut escaping_allocations: HashSet<MemLoc> = HashSet::new();
     for (allocation, _) in &escaping {
         escaping_allocations.insert(*allocation);
     }
@@ -674,7 +710,7 @@ pub fn stack_allocate(func: &mut Function) -> bool {
 
         for (instr_idx, statement) in block.statements.iter_mut().enumerate() {
             if let Rvalue::Alloc { loc, .. } = &mut statement.rvalue {
-                let allocation = Allocation(Location {
+                let allocation = MemLoc::Concrete(Location {
                     block: block_idx,
                     instr: instr_idx,
                 });
