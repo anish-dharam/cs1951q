@@ -1,0 +1,13 @@
+---
+source: tests/snapshots.rs
+expression: output
+---
+success = false
+stdout = ''
+stderr = '''
+error: unexpected argument '2' found
+
+Usage: rice [OPTIONS] <FILE> [COMMAND]
+
+For more information, try '--help'.
+'''

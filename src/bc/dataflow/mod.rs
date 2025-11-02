@@ -22,7 +22,7 @@ use wasmparser::collections::Set;
 
 use crate::bc::types::{
     AllocArgs, AllocKind, AllocLoc, Const, Local, LocalIdx, Operand, ProjectionElem, Rvalue,
-    TerminatorKind,
+    TerminatorKind, Type,
 };
 
 use crate::utils::Symbol;
@@ -252,6 +252,20 @@ impl AndersenAnalysis {
         }
     }
 
+    fn get_operand_type(op: &Operand) -> Type {
+        match op {
+            Operand::Place(p) => p.ty,
+            Operand::Const(c) => c.ty(),
+            Operand::Func { ty, .. } => *ty,
+        }
+    }
+
+    /// Check if two types are compatible for pointer aliasing purposes.
+    /// Types are compatible if they are the same type.
+    fn types_compatible(ty1: &Type, ty2: &Type) -> bool {
+        ty1 == ty2
+    }
+
     fn union_into(dst: &mut PointsToSet, src: &PointsToSet) -> bool {
         let before = dst.len();
         dst.extend(src.iter().cloned());
@@ -410,53 +424,160 @@ impl Analysis for AndersenAnalysis {
                 }
             }
             Rvalue::Call { f, args } => {
-                // Conservative: all inputs flow to each other and to the output
-                let mut participants: Vec<(LocalIdx, FieldPath)> = Vec::new();
+                // only arguments of compatible types alias
+                // direct allocations (arguments themselves) don't alias each other,// but anything that points to compatible-typed allocations should alias
+
+                // track argument (local, field_path) pairs to exclude them from aliasing
+                let mut arg_locations: HashSet<(LocalIdx, FieldPath)> = HashSet::new();
+                let mut arg_info: Vec<(Type, PointsToSet)> = Vec::new();
 
                 if let Some(l) = AndersenAnalysis::base_local_of_operand(f) {
-                    participants.push((l, AndersenAnalysis::field_path_of_operand(f)));
+                    let arg_ty = AndersenAnalysis::get_operand_type(f);
+                    let field_path = AndersenAnalysis::field_path_of_operand(f);
+                    let points_to = AndersenAnalysis::get_points_to(state, l, &field_path);
+                    arg_locations.insert((l, field_path));
+                    arg_info.push((arg_ty, points_to));
                 }
+
                 for a in args {
                     if let Some(l) = AndersenAnalysis::base_local_of_operand(a) {
-                        participants.push((l, AndersenAnalysis::field_path_of_operand(a)));
+                        let arg_ty = AndersenAnalysis::get_operand_type(a);
+                        let field_path = AndersenAnalysis::field_path_of_operand(a);
+                        let points_to = AndersenAnalysis::get_points_to(state, l, &field_path);
+                        arg_locations.insert((l, field_path));
+                        arg_info.push((arg_ty, points_to));
                     }
                 }
-                participants.push((dst_local, dst_field_path));
 
-                // Build the union of all points-to sets
-                let mut total: PointsToSet = PointsToSet::new();
-                for (l, field_path) in &participants {
-                    let points_to = AndersenAnalysis::get_points_to(state, *l, field_path);
-                    total.extend(points_to.iter().cloned());
+                // Group arguments by compatible types
+                let mut type_groups: HashMap<Type, PointsToSet> = HashMap::new();
+                for (ty, points_to) in arg_info {
+                    type_groups
+                        .entry(ty)
+                        .or_default()
+                        .extend(points_to.iter().cloned());
                 }
 
-                // Write back to all participants
-                for (l, field_path) in participants {
-                    AndersenAnalysis::set_points_to(state, l, field_path, total.clone());
+                // for each type group, update all locals that point to any allocation in that group
+                // to point to the union of all allocations in that group
+                // BUT: exclude the arguments themselves (they shouldn't alias each other)
+                for (_, union_allocs) in &type_groups {
+                    // Extract the set of MemLoc values from the union
+                    let union_memlocs: HashSet<MemLoc> =
+                        union_allocs.iter().map(|(memloc, _)| *memloc).collect();
+
+                    // Find all (local, field_path) pairs in the state that point to any allocation in this group
+                    let mut to_update: Vec<(LocalIdx, FieldPath, PointsToSet)> = Vec::new();
+
+                    for ((local, field_path), current_points_to) in state.iter() {
+                        // Skip argument locals themselves - they shouldn't alias each other
+                        if arg_locations.contains(&(*local, field_path.clone())) {
+                            continue;
+                        }
+
+                        // check if this local/field-path points to any MemLoc in the union
+                        let points_to_group_allocation = current_points_to
+                            .iter()
+                            .any(|(memloc, _)| union_memlocs.contains(memloc));
+
+                        if points_to_group_allocation {
+                            let mut new_points_to = current_points_to.clone();
+                            new_points_to.extend(union_allocs.iter().cloned());
+                            to_update.push((*local, field_path.clone(), new_points_to));
+                        }
+                    }
+
+                    for (local, field_path, new_points_to) in to_update {
+                        AndersenAnalysis::set_points_to(state, local, field_path, new_points_to);
+                    }
+                }
+
+                // update the return value to point to union of all compatible allocations
+                let mut return_points_to = PointsToSet::new();
+                for union_allocs in type_groups.values() {
+                    return_points_to.extend(union_allocs.iter().cloned());
+                }
+                if !return_points_to.is_empty() {
+                    AndersenAnalysis::set_points_to(
+                        state,
+                        dst_local,
+                        dst_field_path.clone(),
+                        return_points_to,
+                    );
                 }
             }
             Rvalue::MethodCall { receiver, args, .. } => {
-                // Same conservative treatment as Call
-                let mut participants: Vec<(LocalIdx, FieldPath)> = Vec::new();
+                // Type-based aliasing: same logic as Call
+                let mut arg_locations: HashSet<(LocalIdx, FieldPath)> = HashSet::new();
+                let mut arg_info: Vec<(Type, PointsToSet)> = Vec::new();
 
                 if let Some(l) = AndersenAnalysis::base_local_of_operand(receiver) {
-                    participants.push((l, AndersenAnalysis::field_path_of_operand(receiver)));
+                    let arg_ty = AndersenAnalysis::get_operand_type(receiver);
+                    let field_path = AndersenAnalysis::field_path_of_operand(receiver);
+                    let points_to = AndersenAnalysis::get_points_to(state, l, &field_path);
+                    arg_locations.insert((l, field_path));
+                    arg_info.push((arg_ty, points_to));
                 }
+
                 for a in args {
                     if let Some(l) = AndersenAnalysis::base_local_of_operand(a) {
-                        participants.push((l, AndersenAnalysis::field_path_of_operand(a)));
+                        let arg_ty = AndersenAnalysis::get_operand_type(a);
+                        let field_path = AndersenAnalysis::field_path_of_operand(a);
+                        let points_to = AndersenAnalysis::get_points_to(state, l, &field_path);
+                        arg_locations.insert((l, field_path));
+                        arg_info.push((arg_ty, points_to));
                     }
                 }
-                participants.push((dst_local, dst_field_path));
 
-                let mut total: PointsToSet = PointsToSet::new();
-                for (l, field_path) in &participants {
-                    let points_to = AndersenAnalysis::get_points_to(state, *l, field_path);
-                    total.extend(points_to.iter().cloned());
+                // group arguments by compatible types
+                let mut type_groups: HashMap<Type, PointsToSet> = HashMap::new();
+                for (ty, points_to) in arg_info {
+                    type_groups
+                        .entry(ty)
+                        .or_default()
+                        .extend(points_to.iter().cloned());
                 }
 
-                for (l, field_path) in participants {
-                    AndersenAnalysis::set_points_to(state, l, field_path, total.clone());
+                // For each type group, update all locals that point to any allocation in that group
+                for (_, union_allocs) in &type_groups {
+                    let union_memlocs: HashSet<MemLoc> =
+                        union_allocs.iter().map(|(memloc, _)| *memloc).collect();
+                    let mut to_update: Vec<(LocalIdx, FieldPath, PointsToSet)> = Vec::new();
+
+                    for ((local, field_path), current_points_to) in state.iter() {
+                        // Skip argument locals themselves
+                        if arg_locations.contains(&(*local, field_path.clone())) {
+                            continue;
+                        }
+
+                        let points_to_group_allocation = current_points_to
+                            .iter()
+                            .any(|(memloc, _)| union_memlocs.contains(memloc));
+
+                        if points_to_group_allocation {
+                            let mut new_points_to = current_points_to.clone();
+                            new_points_to.extend(union_allocs.iter().cloned());
+                            to_update.push((*local, field_path.clone(), new_points_to));
+                        }
+                    }
+
+                    for (local, field_path, new_points_to) in to_update {
+                        AndersenAnalysis::set_points_to(state, local, field_path, new_points_to);
+                    }
+                }
+
+                // Update the return value
+                let mut return_points_to = PointsToSet::new();
+                for union_allocs in type_groups.values() {
+                    return_points_to.extend(union_allocs.iter().cloned());
+                }
+                if !return_points_to.is_empty() {
+                    AndersenAnalysis::set_points_to(
+                        state,
+                        dst_local,
+                        dst_field_path.clone(),
+                        return_points_to,
+                    );
                 }
             }
             Rvalue::Closure { env, .. } => {
@@ -679,7 +800,7 @@ fn compute_escaping_allocations(
         }
     }
 
-    // Mark entire allocations as escaping if any field of them escapes
+    // allocations are escaping if any field of them escapes
     let mut escaping_allocations: HashSet<MemLoc> = HashSet::new();
     for (allocation, _) in &escaping {
         escaping_allocations.insert(*allocation);
@@ -690,22 +811,40 @@ fn compute_escaping_allocations(
 /// Stack allocation optimization pass.
 /// Changes AllocLoc from Heap to Stack for allocations that do not escape the function.
 pub fn stack_allocate(func: &mut Function) -> bool {
-    // Run pointer analysis to get the pointer domain (using immutable reference)
+    // pointer analysis to get the pointer domain
     let pointer_domain = {
         let func_ref = &*func;
         concrete_pointer_analysis(func_ref)
     };
 
     for (local, field_path) in pointer_domain.keys() {
-        println!("local: {:?}, field_path: {:?}", local, field_path);
+        let local_data = func.locals.value(*local);
+        let var_name = local_data
+            .name
+            .map(|s| format!("{:?}", s))
+            .unwrap_or_else(|| format!("<unnamed local {}>", local.index()));
+        println!(
+            "local: {:?} ({}), field_path: {:?}",
+            local, var_name, field_path
+        );
     }
-    for (allocation, points_to) in pointer_domain.iter() {
-        println!("allocation: {:?}, points_to: {:?}", allocation, points_to);
+    for ((local, field_path), points_to) in pointer_domain.iter() {
+        let local_data = func.locals.value(*local);
+        let var_name = local_data
+            .name
+            .map(|s| format!("{:?}", s))
+            .unwrap_or_else(|| format!("<unnamed local {}>", local.index()));
+        let field_path_str = if field_path.is_empty() {
+            "".to_string()
+        } else {
+            format!(".{:?}", field_path.0)
+        };
+        println!("{}{} points_to: {:?}", var_name, field_path_str, points_to);
     }
 
     println!("tdone with function: {:?}\n\n", func.name);
 
-    // Compute which allocation sites escape
+    // compute which allocations escape
     let escaping_allocations = {
         let func_ref = &*func;
         compute_escaping_allocations(func_ref, &pointer_domain)
@@ -713,7 +852,7 @@ pub fn stack_allocate(func: &mut Function) -> bool {
 
     let mut changed = false;
 
-    // Visit all statements and change non-escaping allocations to stack
+    // visit statements and change non-escaping allocations to stack allocation
     let blocks: Vec<_> = func.body.blocks().collect();
     for block_idx in blocks {
         let block = func.body.data_mut(block_idx);
@@ -725,10 +864,10 @@ pub fn stack_allocate(func: &mut Function) -> bool {
                     instr: instr_idx,
                 });
 
-                // Check if this allocation escapes
+                //   // check if this allocation escapes
                 let allocation_escapes = escaping_allocations.contains(&allocation);
 
-                // If this allocation doesn't escape, change it to stack
+                //  if this allocation doesn't escape, change it to stack allocation
                 if !allocation_escapes && *loc == AllocLoc::Heap {
                     *loc = AllocLoc::Stack;
                     changed = true;

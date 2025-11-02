@@ -1,0 +1,13 @@
+
+fn mystery(a: _, b: _, c: _, d: _, e: _) {
+    ()
+}
+
+fn main() {
+    let a = (0,) in
+    let b = (1,) in
+    let c = ("",) in
+    let d = (a,) in
+    let e = (c,) in
+    mystery(a, b, c, d, e)
+}

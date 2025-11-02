@@ -1,0 +1,13 @@
+fn ret_one() -> int {
+    1
+}
+
+fn set_val(x: (int,), y: int) {
+ x.0 := y
+}
+
+ fn main() {
+ let t = (0,) in
+ set_val(t, ret_one());
+ println(int_to_string(t.0))
+ }
