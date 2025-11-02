@@ -10,6 +10,11 @@ use indexical::{
     vec::ArcIndexVec as IndexVec,
 };
 use itertools::{any, fold};
+use petgraph::{
+    Direction as EdgeDirection,
+    algo::dominators::{self, Dominators},
+    visit::EdgeRef,
+};
 use rayon::range;
 use std::{
     cmp::Reverse,
@@ -880,10 +885,10 @@ pub fn stack_allocate(func: &mut Function) -> bool {
 }
 
 //                   CONSTANT PROPAGATION ANALYSIS
-struct ConstantAnalysis;
+pub struct ConstantAnalysis;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-enum Constant {
+pub enum Constant {
     Bottom,
     Const(Const),
     Closure(Symbol),
@@ -1364,4 +1369,163 @@ pub fn dead_code(func: &mut Function) -> bool {
 
     // so leave a line if v is in state_out, or if it has a side effect
     // return true if code was eliminated
+}
+
+// =====================
+// CONTROL DEPENDENCES
+// =====================
+
+/// Compute control dependencies for a function.
+/// Returns a map from each location to the set of locations that it is control-dependent on.
+
+pub fn compute_control_dependencies(func: &Function) -> HashMap<Location, HashSet<Location>> {
+    use petgraph::graph::{DiGraph, NodeIndex};
+
+    // Build reverse CFG
+    let cfg = func.body.cfg();
+    let mut reverse_cfg = DiGraph::<(), ()>::with_capacity(cfg.node_count(), cfg.edge_count());
+
+    for _ in cfg.node_indices() {
+        reverse_cfg.add_node(());
+    }
+
+    // add reversed edges
+    for edge in cfg.edge_references() {
+        reverse_cfg.add_edge(edge.target(), edge.source(), ());
+    }
+
+    // find exit node
+    let exit_node = cfg.node_indices().find(|&node| {
+        cfg.neighbors_directed(node, EdgeDirection::Outgoing)
+            .next()
+            .is_none()
+    });
+
+    // if there's no single exit node, use the last block in RPO
+    let exit_node = exit_node.unwrap_or_else(|| {
+        func.body
+            .blocks()
+            .last()
+            .map(|bb| bb.into())
+            .unwrap_or_else(|| NodeIndex::new(0))
+    });
+
+    // compute dominators on reverse CFG
+    let post_doms = dominators::simple_fast(&reverse_cfg, exit_node);
+
+    // compute post-dominance frontiers
+    let pdf = compute_post_dominance_frontiers(cfg, &post_doms, exit_node);
+
+    // derive control dependencies from PDF
+    let mut cd = HashMap::<Location, HashSet<Location>>::new();
+
+    // for each basic block B and its post-dominance frontier nodes F:
+    // all locations in B are control-dependent on the terminator of F
+    for (bb_idx, frontier) in &pdf {
+        // get the terminator location for this basic block
+        let bb = func.body.data(*bb_idx);
+        let terminator_loc = Location {
+            block: *bb_idx,
+            instr: bb.terminator_index(),
+        };
+
+        // all nodes in frontier need to have this as a control dependency
+        for frontier_bb in frontier {
+            // add CD for all locations in frontier_bb
+            let frontier_bb_data = func.body.data(*frontier_bb);
+            let num_instrs = frontier_bb_data.statements.len() + 1;
+            for instr_idx in 0..num_instrs {
+                let loc = Location {
+                    block: *frontier_bb,
+                    instr: instr_idx,
+                };
+                cd.entry(loc)
+                    .or_insert_with(HashSet::new)
+                    .insert(terminator_loc);
+            }
+        }
+    }
+
+    cd
+}
+
+fn compute_post_dominance_frontiers(
+    cfg: &super::types::Cfg,
+    post_doms: &Dominators<petgraph::graph::NodeIndex>,
+    exit_node: petgraph::graph::NodeIndex,
+) -> HashMap<super::types::BasicBlockIdx, HashSet<super::types::BasicBlockIdx>> {
+    use petgraph::graph::NodeIndex;
+
+    let mut rpo: Vec<NodeIndex> = cfg.node_indices().collect();
+    // sort by reverse post-order
+    rpo.sort_by_key(|&node| -(node.index() as i32));
+
+    let mut pdf = HashMap::new();
+
+    // initialize PDF for each node
+    for node in cfg.node_indices() {
+        pdf.insert(
+            super::types::BasicBlockIdx::from(node),
+            HashSet::<super::types::BasicBlockIdx>::new(),
+        );
+    }
+
+    // bottom-up traversal of dominator tree
+    for &x in &rpo {
+        let x_bb = super::types::BasicBlockIdx::from(x);
+        let mut pdf_x = HashSet::new();
+
+        // local contribution: successors of X that X doesn't strictly post-dominate
+        for y in cfg.neighbors_directed(x, EdgeDirection::Outgoing) {
+            if post_doms.immediate_dominator(y) != Some(x) {
+                pdf_x.insert(super::types::BasicBlockIdx::from(y));
+            }
+        }
+
+        // upward contribution: from children in post-dominator tree
+        for z in cfg.node_indices() {
+            if post_doms.immediate_dominator(z) == Some(x) && z != x {
+                if let Some(pdf_z) = pdf.get(&super::types::BasicBlockIdx::from(z)) {
+                    for &y_bb in pdf_z {
+                        let y_node: NodeIndex = y_bb.into();
+                        if post_doms.immediate_dominator(y_node) != Some(x) {
+                            pdf_x.insert(y_bb);
+                        }
+                    }
+                }
+            }
+        }
+
+        pdf.insert(x_bb, pdf_x);
+    }
+
+    pdf
+}
+
+// intraprocedural facts
+
+pub struct Facts {
+    /// (local, field_path) to set of allocation sites
+    pub pointer_domain: PointerDomain,
+
+    /// maps location to map of local -> constant value
+    pub constant_domain: AnalysisState<ConstantAnalysis>,
+
+    /// maps each (bb_idx, instr_idx) location to the set of locations it is control-dependent on
+    pub control_dependencies: HashMap<Location, HashSet<Location>>,
+}
+
+impl Facts {
+    //intraprocedural facts
+    pub fn compute(func: &Function) -> Self {
+        let pointer_domain = concrete_pointer_analysis(func);
+        let constant_domain = analyze_to_fixpoint(&ConstantAnalysis, func);
+        let control_dependencies = compute_control_dependencies(func);
+
+        Facts {
+            pointer_domain,
+            constant_domain,
+            control_dependencies,
+        }
+    }
 }

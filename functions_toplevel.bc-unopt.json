@@ -1,0 +1,367 @@
+[
+  {
+    "name": "hello",
+    "num_params": 2,
+    "locals": {
+      "domain": [
+        {
+          "ty": {
+            "Tuple": []
+          },
+          "name": "env"
+        },
+        {
+          "ty": "String",
+          "name": "object"
+        },
+        {
+          "ty": {
+            "Tuple": []
+          },
+          "name": null
+        },
+        {
+          "ty": {
+            "Func": {
+              "inputs": [
+                "String"
+              ],
+              "output": {
+                "Tuple": []
+              }
+            }
+          },
+          "name": null
+        },
+        {
+          "ty": "String",
+          "name": null
+        },
+        {
+          "ty": "String",
+          "name": null
+        },
+        {
+          "ty": "String",
+          "name": null
+        }
+      ]
+    },
+    "ret_ty": {
+      "Tuple": []
+    },
+    "body": {
+      "cfg": {
+        "nodes": [
+          {
+            "statements": [
+              {
+                "place": {
+                  "local": 3,
+                  "projection": [],
+                  "ty": {
+                    "Func": {
+                      "inputs": [
+                        "String"
+                      ],
+                      "output": {
+                        "Tuple": []
+                      }
+                    }
+                  }
+                },
+                "rvalue": {
+                  "Closure": {
+                    "f": "println",
+                    "env": []
+                  }
+                },
+                "span": {
+                  "start": 29,
+                  "end": 36
+                }
+              },
+              {
+                "place": {
+                  "local": 4,
+                  "projection": [],
+                  "ty": "String"
+                },
+                "rvalue": {
+                  "Binop": {
+                    "op": "Concat",
+                    "left": {
+                      "Const": {
+                        "String": "Bonjour "
+                      }
+                    },
+                    "right": {
+                      "Place": {
+                        "local": 1,
+                        "projection": [],
+                        "ty": "String"
+                      }
+                    }
+                  }
+                },
+                "span": {
+                  "start": 37,
+                  "end": 56
+                }
+              },
+              {
+                "place": {
+                  "local": 2,
+                  "projection": [],
+                  "ty": {
+                    "Tuple": []
+                  }
+                },
+                "rvalue": {
+                  "Call": {
+                    "f": {
+                      "Place": {
+                        "local": 3,
+                        "projection": [],
+                        "ty": {
+                          "Func": {
+                            "inputs": [
+                              "String"
+                            ],
+                            "output": {
+                              "Tuple": []
+                            }
+                          }
+                        }
+                      }
+                    },
+                    "args": [
+                      {
+                        "Place": {
+                          "local": 4,
+                          "projection": [],
+                          "ty": "String"
+                        }
+                      }
+                    ]
+                  }
+                },
+                "span": {
+                  "start": 25,
+                  "end": 59
+                }
+              }
+            ],
+            "terminator": {
+              "kind": {
+                "Return": {
+                  "Place": {
+                    "local": 2,
+                    "projection": [],
+                    "ty": {
+                      "Tuple": []
+                    }
+                  }
+                }
+              },
+              "span": {
+                "start": 25,
+                "end": 59
+              }
+            }
+          }
+        ],
+        "node_holes": [],
+        "edge_property": "directed",
+        "edges": []
+      },
+      "locations": {
+        "domain": [
+          {
+            "block": 0,
+            "instr": 0
+          },
+          {
+            "block": 0,
+            "instr": 1
+          },
+          {
+            "block": 0,
+            "instr": 2
+          },
+          {
+            "block": 0,
+            "instr": 3
+          }
+        ]
+      }
+    },
+    "annots": []
+  },
+  {
+    "name": "main",
+    "num_params": 1,
+    "locals": {
+      "domain": [
+        {
+          "ty": {
+            "Tuple": []
+          },
+          "name": "env"
+        },
+        {
+          "ty": {
+            "Tuple": []
+          },
+          "name": null
+        },
+        {
+          "ty": {
+            "Func": {
+              "inputs": [
+                "String"
+              ],
+              "output": {
+                "Tuple": []
+              }
+            }
+          },
+          "name": "f"
+        },
+        {
+          "ty": {
+            "Func": {
+              "inputs": [
+                "String"
+              ],
+              "output": {
+                "Tuple": []
+              }
+            }
+          },
+          "name": null
+        },
+        {
+          "ty": "String",
+          "name": null
+        }
+      ]
+    },
+    "ret_ty": {
+      "Tuple": []
+    },
+    "body": {
+      "cfg": {
+        "nodes": [
+          {
+            "statements": [
+              {
+                "place": {
+                  "local": 2,
+                  "projection": [],
+                  "ty": {
+                    "Func": {
+                      "inputs": [
+                        "String"
+                      ],
+                      "output": {
+                        "Tuple": []
+                      }
+                    }
+                  }
+                },
+                "rvalue": {
+                  "Closure": {
+                    "f": "hello",
+                    "env": []
+                  }
+                },
+                "span": {
+                  "start": 83,
+                  "end": 88
+                }
+              },
+              {
+                "place": {
+                  "local": 1,
+                  "projection": [],
+                  "ty": {
+                    "Tuple": []
+                  }
+                },
+                "rvalue": {
+                  "Call": {
+                    "f": {
+                      "Place": {
+                        "local": 2,
+                        "projection": [],
+                        "ty": {
+                          "Func": {
+                            "inputs": [
+                              "String"
+                            ],
+                            "output": {
+                              "Tuple": []
+                            }
+                          }
+                        }
+                      }
+                    },
+                    "args": [
+                      {
+                        "Const": {
+                          "String": "le monde"
+                        }
+                      }
+                    ]
+                  }
+                },
+                "span": {
+                  "start": 94,
+                  "end": 107
+                }
+              }
+            ],
+            "terminator": {
+              "kind": {
+                "Return": {
+                  "Place": {
+                    "local": 1,
+                    "projection": [],
+                    "ty": {
+                      "Tuple": []
+                    }
+                  }
+                }
+              },
+              "span": {
+                "start": 71,
+                "end": 111
+              }
+            }
+          }
+        ],
+        "node_holes": [],
+        "edge_property": "directed",
+        "edges": []
+      },
+      "locations": {
+        "domain": [
+          {
+            "block": 0,
+            "instr": 0
+          },
+          {
+            "block": 0,
+            "instr": 1
+          },
+          {
+            "block": 0,
+            "instr": 2
+          }
+        ]
+      }
+    },
+    "annots": []
+  }
+]

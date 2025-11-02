@@ -3,7 +3,7 @@
 use miette::Result;
 use strum::{Display, EnumString};
 
-use crate::bc::dataflow::{constant_propagation, dead_code, stack_allocate};
+use crate::bc::dataflow::{Facts, constant_propagation, dead_code, stack_allocate};
 
 use self::types::{Function, Program};
 
@@ -24,7 +24,11 @@ pub enum OptLevel {
 }
 
 /// Run correctness analyses on the whole program.
-pub fn analyze(_prog: &Program) -> Result<()> {
+pub fn analyze(prog: &Program) -> Result<()> {
+    // Temporary: compute intraprocedural facts to trigger debugging
+    for func in prog.functions() {
+        Facts::compute(func);
+    }
     Ok(())
 }
 
