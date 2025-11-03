@@ -3,7 +3,7 @@
 use miette::Result;
 use strum::{Display, EnumString};
 
-use crate::bc::dataflow::{GlobalAnalysis, constant_propagation, dead_code, stack_allocate};
+use crate::bc::dataflow::{Facts, constant_propagation, dead_code, stack_allocate};
 
 use self::types::{Function, Program};
 
@@ -25,21 +25,10 @@ pub enum OptLevel {
 
 /// Run correctness analyses on the whole program.
 pub fn analyze(prog: &Program) -> Result<()> {
-    // Run interprocedural taint analysis
-    let global_analysis = GlobalAnalysis::new(prog);
-
-    // Precompute all facts upfront to avoid RefCell borrow conflicts during recursive analysis
-    global_analysis.precompute_all_facts();
-
-    // Find main function and analyze it with empty context
-    use crate::utils::Symbol;
-    let main_sym = Symbol::main();
-    if let Some(main_func) = prog.functions().iter().find(|f| f.name == main_sym) {
-        let _tainted = global_analysis.analyze_function(main_func, Vec::new());
-        // Check for taint violations at sensitive sinks (e.g., int_to_string)
-        global_analysis.check_taint_violations()?;
+    // Temporary: compute intraprocedural facts to trigger debugging
+    for func in prog.functions() {
+        Facts::compute(func);
     }
-
     Ok(())
 }
 

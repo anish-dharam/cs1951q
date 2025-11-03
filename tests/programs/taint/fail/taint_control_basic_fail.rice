@@ -1,0 +1,14 @@
+#[secure]
+fn secure() -> int {
+  0 
+}
+
+fn main() {
+  let p = secure() in  
+  let n = if p == 0 {
+    0
+  } else {
+    1
+  } in
+  println(int_to_string(n))
+}

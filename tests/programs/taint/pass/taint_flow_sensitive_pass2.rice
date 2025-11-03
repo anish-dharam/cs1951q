@@ -1,0 +1,12 @@
+// 1
+
+#[secure]
+fn secure() -> int {
+  0 
+}
+
+fn main() {
+  let t = secure() in
+  t := 1;
+  println(int_to_string(t))  
+}

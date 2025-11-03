@@ -1,0 +1,10 @@
+#[secure]
+fn secure() -> int {
+  0 
+}
+
+fn main() {
+  let a = secure() in
+  let b = (a + 1) as float in
+  println(float_to_string(b))  
+}

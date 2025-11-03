@@ -1,0 +1,16 @@
+// 12
+
+#[secure]
+fn secure() -> int {
+  0 
+}
+
+fn tuplify(x: int, y: int) -> (int, int) {
+  (x, y)
+}
+
+fn main() {
+  let t0 = tuplify(secure(), 1) in
+  let t1 = tuplify(2, secure()) in  
+  println(int_to_string(t0.1) ^ int_to_string(t1.0))
+}
