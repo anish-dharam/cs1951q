@@ -1,0 +1,6 @@
+#[secure] fn secure() -> int { 0 }
+
+fn main() {
+    let p = secure() in
+    println(int_to_string(p))
+}

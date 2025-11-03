@@ -17,6 +17,7 @@ use petgraph::{
 };
 use rayon::range;
 use std::{
+    cell::RefCell,
     cmp::Reverse,
     collections::{HashMap, HashSet, VecDeque},
     iter::successors,
@@ -26,13 +27,15 @@ use std::{
 use wasmparser::collections::Set;
 
 use crate::bc::types::{
-    AllocArgs, AllocKind, AllocLoc, Const, Local, LocalIdx, Operand, ProjectionElem, Rvalue,
+    AllocArgs, AllocKind, AllocLoc, Const, Local, LocalIdx, Operand, Place, ProjectionElem, Rvalue,
     TerminatorKind, Type,
 };
 
 use crate::utils::Symbol;
+use miette::{Diagnostic, Result, bail};
+use thiserror::Error;
 
-use super::types::{Function, Location, Statement, Terminator};
+use super::types::{Function, Location, Program, Statement, Terminator};
 
 use super::visit::VisitMut;
 
@@ -822,33 +825,6 @@ pub fn stack_allocate(func: &mut Function) -> bool {
         concrete_pointer_analysis(func_ref)
     };
 
-    for (local, field_path) in pointer_domain.keys() {
-        let local_data = func.locals.value(*local);
-        let var_name = local_data
-            .name
-            .map(|s| format!("{:?}", s))
-            .unwrap_or_else(|| format!("<unnamed local {}>", local.index()));
-        println!(
-            "local: {:?} ({}), field_path: {:?}",
-            local, var_name, field_path
-        );
-    }
-    for ((local, field_path), points_to) in pointer_domain.iter() {
-        let local_data = func.locals.value(*local);
-        let var_name = local_data
-            .name
-            .map(|s| format!("{:?}", s))
-            .unwrap_or_else(|| format!("<unnamed local {}>", local.index()));
-        let field_path_str = if field_path.is_empty() {
-            "".to_string()
-        } else {
-            format!(".{:?}", field_path.0)
-        };
-        println!("{}{} points_to: {:?}", var_name, field_path_str, points_to);
-    }
-
-    println!("tdone with function: {:?}\n\n", func.name);
-
     // compute which allocations escape
     let escaping_allocations = {
         let func_ref = &*func;
@@ -1300,7 +1276,14 @@ impl Analysis for DeadCodeAnalysis {
                 crate::bc::types::Operand::Place(place) => {
                     state.insert(place.local);
                 }
-                crate::bc::types::Operand::Func { f, ty } => (),
+                crate::bc::types::Operand::Func { .. } => (),
+            },
+            super::types::TerminatorKind::CondJump { cond, .. } => match cond {
+                crate::bc::types::Operand::Const(_) => (),
+                crate::bc::types::Operand::Place(place) => {
+                    state.insert(place.local);
+                }
+                crate::bc::types::Operand::Func { .. } => (),
             },
             _ => (),
         }
@@ -1527,5 +1510,773 @@ impl Facts {
             constant_domain,
             control_dependencies,
         }
+    }
+}
+
+// =====================
+// TAINT ANALYSIS
+// =====================
+
+/// Type alias for tainted MemLoc set
+type TaintedMemLocs = HashSet<MemLoc>;
+
+/// Converts a Place to (LocalIdx, FieldPath) tuple
+fn place_to_local_field_path(place: &Place) -> (LocalIdx, FieldPath) {
+    let local = place.local;
+    let mut field_path = FieldPath::empty();
+    for proj in &place.projection {
+        match proj {
+            ProjectionElem::Field { index, .. } => {
+                field_path = field_path.extend(*index);
+            }
+            ProjectionElem::ArrayIndex { .. } => {
+                // Arrays are field-insensitive, so we don't extend the path
+            }
+        }
+    }
+    (local, field_path)
+}
+
+/// GlobalAnalysis holds taint analysis results for all functions
+pub struct GlobalAnalysis<'a> {
+    /// Taint analysis results: function name -> context -> tainted MemLocs
+    results: RefCell<HashMap<Symbol, HashMap<Vec<Place>, TaintedMemLocs>>>,
+    /// Intraprocedural facts per function (computed on-demand)
+    facts: RefCell<HashMap<Symbol, Facts>>,
+    /// All functions in the program
+    pub(crate) functions: Vec<&'a Function>,
+}
+
+impl<'a> GlobalAnalysis<'a> {
+    pub fn new(prog: &'a Program) -> Self {
+        let functions: Vec<&'a Function> = prog.functions().iter().collect();
+
+        GlobalAnalysis {
+            results: RefCell::new(HashMap::new()),
+            facts: RefCell::new(HashMap::new()),
+            functions,
+        }
+    }
+
+    /// Get or compute intraprocedural facts for a function
+    fn get_or_compute_facts(&self, func: &Function) {
+        // Check if facts already exist (using immutable borrow)
+        let needs_compute = {
+            let facts_map = self.facts.borrow();
+            !facts_map.contains_key(&func.name)
+        };
+
+        // Only compute if needed (using mutable borrow)
+        if needs_compute {
+            let mut facts_map = self.facts.borrow_mut();
+            facts_map
+                .entry(func.name)
+                .or_insert_with(|| Facts::compute(func));
+        }
+    }
+
+    /// Precompute facts for all functions to avoid borrow conflicts during recursive analysis
+    pub fn precompute_all_facts(&self) {
+        for func in &self.functions {
+            self.get_or_compute_facts(func);
+        }
+    }
+
+    /// Analyze a function with a given context, returning tainted MemLocs
+    pub fn analyze_function(&self, func: &Function, context: Vec<Place>) -> TaintedMemLocs {
+        // Check if we already have results for this (function, context) pair
+        {
+            let results_map = self.results.borrow();
+            if let Some(context_map) = results_map.get(&func.name) {
+                if let Some(tainted) = context_map.get(&context) {
+                    return tainted.clone();
+                }
+            }
+        }
+
+        // Build LocalAnalysis and run fixpoint analysis
+        self.get_or_compute_facts(func);
+        let facts_map = self.facts.borrow();
+        let facts = facts_map.get(&func.name).unwrap();
+        let local_analysis = LocalAnalysis {
+            global: self,
+            func,
+            context: context.clone(),
+            facts,
+        };
+
+        let analysis_state = analyze_to_fixpoint(&local_analysis, func);
+
+        // Extract final tainted MemLocs from all locations in the function
+        // For functions that return values, collect from return statements
+        // For functions like main(), collect from all final locations
+        let mut tainted_memlocs = HashSet::new();
+
+        let mut has_return = false;
+        // First, collect from return statements
+        for block_idx in func.body.blocks() {
+            let block = func.body.data(block_idx);
+            let terminator_loc = Location {
+                block: block_idx,
+                instr: block.statements.len(),
+            };
+
+            if let Either::Right(terminator) = func.body.instr(terminator_loc) {
+                if let TerminatorKind::Return(operand) = terminator.kind() {
+                    has_return = true;
+                    // Join all tainted MemLocs at this location
+                    let state_at_return = analysis_state.get(&terminator_loc);
+                    tainted_memlocs.extend(state_at_return.iter().cloned());
+
+                    // Also check if return operand points to tainted MemLocs
+                    if let Operand::Place(ret_place) = operand {
+                        let (ret_local, ret_field_path) = place_to_local_field_path(ret_place);
+                        if let Some(ret_points_to) =
+                            facts.pointer_domain.get(&(ret_local, ret_field_path))
+                        {
+                            for (ret_memloc, _) in ret_points_to {
+                                if state_at_return.contains(ret_memloc) {
+                                    tainted_memlocs.insert(*ret_memloc);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // If no return statements, collect from all final locations (for main() etc.)
+        if !has_return {
+            for block_idx in func.body.blocks() {
+                let block = func.body.data(block_idx);
+                let terminator_loc = Location {
+                    block: block_idx,
+                    instr: block.statements.len(),
+                };
+                let state_at_end = analysis_state.get(&terminator_loc);
+                tainted_memlocs.extend(state_at_end.iter().cloned());
+            }
+        }
+
+        // Store results
+        {
+            let mut results_map = self.results.borrow_mut();
+            results_map
+                .entry(func.name)
+                .or_insert_with(HashMap::new)
+                .insert(context, tainted_memlocs.clone());
+        }
+
+        tainted_memlocs
+    }
+
+    pub fn find_function(&self, name: Symbol) -> Option<&'a Function> {
+        self.functions.iter().find(|f| f.name == name).copied()
+    }
+
+    /// Check for taint violations at sensitive sinks (e.g., int_to_string)
+    pub fn check_taint_violations(&self) -> Result<()> {
+        use crate::utils::sym;
+        let int_to_string_sym = sym("int_to_string");
+
+        // Collect all violations
+        let mut violations = Vec::new();
+
+        // Collect all contexts first to avoid borrow conflicts
+        let mut function_contexts: Vec<(Symbol, Vec<Vec<Place>>)> = Vec::new();
+        {
+            let results_map = self.results.borrow();
+            for func in &self.functions {
+                let contexts: Vec<Vec<Place>> = results_map
+                    .get(&func.name)
+                    .map(|ctx_map| ctx_map.keys().cloned().collect())
+                    .unwrap_or_else(|| vec![Vec::new()]);
+                function_contexts.push((func.name, contexts));
+            }
+        }
+
+        // Check all functions for calls to sensitive sinks
+        // We need to analyze each function, but avoid recursive calls during violation checking
+        // So we'll use a flag or ensure all callees are analyzed first
+        for (func_name, contexts) in function_contexts {
+            let func = self.functions.iter().find(|f| f.name == func_name).unwrap();
+
+            for context in contexts {
+                // Re-run analysis to get state at each location
+                // Note: We need to ensure all analysis is done upfront to avoid RefCell conflicts
+                // First, ensure this function+context has been analyzed
+                {
+                    let results_map = self.results.borrow();
+                    if results_map
+                        .get(&func_name)
+                        .and_then(|ctx_map| ctx_map.get(&context))
+                        .is_none()
+                    {
+                        // Need to analyze this function+context first
+                        drop(results_map);
+                        self.analyze_function(func, context.clone());
+                    }
+                }
+
+                // Now get facts and run analysis for violation checking
+                // Since all functions are already analyzed, this should only use cached results
+                let facts_map = self.facts.borrow();
+                let facts = facts_map.get(&func_name).unwrap();
+                let local_analysis = LocalAnalysis {
+                    global: self,
+                    func,
+                    context: context.clone(),
+                    facts,
+                };
+
+                let analysis_state = analyze_to_fixpoint(&local_analysis, func);
+
+                // Check each statement for calls to sensitive sinks
+                for block_idx in func.body.blocks() {
+                    let block = func.body.data(block_idx);
+                    for (stmt_idx, statement) in block.statements.iter().enumerate() {
+                        let stmt_loc = Location {
+                            block: block_idx,
+                            instr: stmt_idx,
+                        };
+
+                        // Get taint state at this location
+                        let state_at_stmt = analysis_state.get(&stmt_loc);
+
+                        // Check if this is a call to a sensitive sink
+                        if let Rvalue::Call { f, args } = &statement.rvalue {
+                            // Check if this is a call to int_to_string
+                            let mut is_int_to_string = false;
+                            match f {
+                                Operand::Func { f: func_name, .. } => {
+                                    is_int_to_string = *func_name == int_to_string_sym;
+                                }
+                                Operand::Place(f_place) => {
+                                    // Check constant domain
+                                    if let Some(const_val) =
+                                        facts.constant_domain.get(&stmt_loc).get(&f_place.local)
+                                    {
+                                        if let Constant::Closure(f_name) = const_val {
+                                            is_int_to_string = *f_name == int_to_string_sym;
+                                        }
+                                    }
+                                }
+                                _ => {}
+                            }
+
+                            if is_int_to_string {
+                                // Check if any argument is tainted
+                                for arg in args {
+                                    let mut is_tainted = false;
+
+                                    match arg {
+                                        Operand::Place(arg_place) => {
+                                            let (arg_local, arg_field_path) =
+                                                place_to_local_field_path(arg_place);
+
+                                            // Check if this argument points to any tainted MemLoc
+                                            if let Some(points_to) = facts
+                                                .pointer_domain
+                                                .get(&(arg_local, arg_field_path))
+                                            {
+                                                for (memloc, _) in points_to {
+                                                    if state_at_stmt.contains(memloc) {
+                                                        is_tainted = true;
+                                                        break;
+                                                    }
+                                                }
+                                            }
+
+                                            // Also check if the local itself represents a tainted primitive
+                                            // For primitives, we check if any abstract return MemLoc is in state
+                                            // This means some tainted value was assigned to this local
+                                            if !is_tainted {
+                                                for memloc in state_at_stmt.iter() {
+                                                    if let MemLoc::Abstract(_, usize::MAX) = memloc
+                                                    {
+                                                        // Check if this abstract return was propagated to this local
+                                                        // We can check if the local's value could be the return value
+                                                        // For now, conservatively assume it could be if state contains abstract returns
+                                                        is_tainted = true;
+                                                        break;
+                                                    }
+                                                }
+                                            }
+                                        }
+                                        Operand::Const(_) => {
+                                            // Constants are safe - no taint
+                                        }
+                                        _ => {
+                                            // For other operands, conservatively assume safe
+                                        }
+                                    }
+
+                                    if is_tainted {
+                                        violations.push((func.name, stmt_loc));
+                                        break; // One violation per call is enough
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        if !violations.is_empty() {
+            // Report first violation for now
+            let (func_name, loc) = &violations[0];
+            bail!(TaintError {
+                function: *func_name,
+                location: *loc,
+            });
+        }
+
+        Ok(())
+    }
+}
+
+#[derive(Diagnostic, Error, Debug)]
+#[error(
+    "taint violation: tainted data flows into sensitive sink `int_to_string` in function `{function}`"
+)]
+pub struct TaintError {
+    function: Symbol,
+    location: Location,
+}
+
+/// LocalAnalysis performs taint propagation for a single function
+struct LocalAnalysis<'a> {
+    global: &'a GlobalAnalysis<'a>,
+    func: &'a Function,
+    context: Vec<Place>,
+    facts: &'a Facts,
+}
+
+impl<'a> Analysis for LocalAnalysis<'a> {
+    type Domain = TaintedMemLocs;
+
+    const DIRECTION: Direction = Direction::Forward;
+
+    fn bottom(&self, func: &Function) -> Self::Domain {
+        let mut state = HashSet::new();
+
+        // If this is a secure() function, mark its return value as tainted
+        // Secure functions always return tainted data
+        if func.secure() {
+            let return_memloc = MemLoc::Abstract(func.name, usize::MAX);
+            state.insert(return_memloc);
+        }
+
+        // If context has tainted parameters, use pointer analysis to find their MemLocs
+        for place in &self.context {
+            let (local, field_path) = place_to_local_field_path(place);
+
+            // Look up in pointer_domain
+            if let Some(points_to) = self.facts.pointer_domain.get(&(local, field_path)) {
+                // Extract MemLocs from PointsToSet
+                for (memloc, _) in points_to {
+                    // Check if this MemLoc matches the field path
+                    // For now, we'll add all MemLocs that could be at this location
+                    // Field sensitivity will be handled during propagation
+                    state.insert(*memloc);
+                }
+            }
+        }
+
+        state
+    }
+
+    fn handle_statement(&self, state: &mut Self::Domain, statement: &Statement, loc: Location) {
+        let dst_local = statement.place.local;
+        let (dst_local_idx, dst_field_path) = place_to_local_field_path(&statement.place);
+
+        match &statement.rvalue {
+            Rvalue::Operand(op) => {
+                // Flow-sensitive assignment: check if RHS is constant
+                let is_constant = match op {
+                    Operand::Const(_) => true,
+                    Operand::Place(p) => {
+                        // Check constant domain
+                        if let Some(const_val) = self.facts.constant_domain.get(&loc).get(&p.local)
+                        {
+                            matches!(const_val, Constant::Const(_))
+                        } else {
+                            false
+                        }
+                    }
+                    Operand::Func { .. } => false,
+                };
+
+                if is_constant {
+                    // Remove taint from LHS if RHS is constant (flow-sensitive)
+                    // Clear all MemLocs that could be at this location
+                    if let Some(points_to) = self
+                        .facts
+                        .pointer_domain
+                        .get(&(dst_local_idx, dst_field_path.clone()))
+                    {
+                        for (memloc, _) in points_to {
+                            state.remove(memloc);
+                        }
+                    }
+                    // Also remove abstract return MemLocs for flow-sensitivity
+                    // When assigning a constant, remove any abstract return MemLocs
+                    let abstract_returns: Vec<MemLoc> = state
+                        .iter()
+                        .filter_map(|memloc| {
+                            if let MemLoc::Abstract(_, usize::MAX) = memloc {
+                                Some(*memloc)
+                            } else {
+                                None
+                            }
+                        })
+                        .collect();
+                    for return_memloc in &abstract_returns {
+                        state.remove(return_memloc);
+                    }
+                } else if let Operand::Place(src_place) = op {
+                    // Propagate taint from source to destination
+                    let (src_local_idx, src_field_path) = place_to_local_field_path(src_place);
+
+                    // Get all MemLocs that source points to
+                    let mut src_memlocs = HashSet::new();
+                    if let Some(points_to) = self
+                        .facts
+                        .pointer_domain
+                        .get(&(src_local_idx, src_field_path.clone()))
+                    {
+                        for (memloc, field_path) in points_to {
+                            // Field-sensitive: only propagate if field paths match or source is root
+                            if src_field_path.is_empty() || field_path == &src_field_path {
+                                src_memlocs.insert(*memloc);
+                            }
+                        }
+                    }
+
+                    // Check which of these MemLocs are tainted
+                    let mut any_tainted = false;
+                    for memloc in &src_memlocs {
+                        if state.contains(memloc) {
+                            any_tainted = true;
+                            // Propagate to destination
+                            if let Some(dst_points_to) = self
+                                .facts
+                                .pointer_domain
+                                .get(&(dst_local_idx, dst_field_path.clone()))
+                            {
+                                for (dst_memloc, dst_field_path_in_alloc) in dst_points_to {
+                                    // Field-sensitive propagation
+                                    if dst_field_path.is_empty()
+                                        || dst_field_path_in_alloc == &dst_field_path
+                                    {
+                                        state.insert(*dst_memloc);
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    // Also check if source variable holds a tainted abstract return value
+                    // For primitive types, we need to propagate abstract MemLocs that represent return values
+                    // Collect abstract return MemLocs first to avoid borrow conflicts
+                    let abstract_returns: Vec<MemLoc> = state
+                        .iter()
+                        .filter_map(|memloc| {
+                            if let MemLoc::Abstract(_, usize::MAX) = memloc {
+                                Some(*memloc)
+                            } else {
+                                None
+                            }
+                        })
+                        .collect();
+
+                    // If we have any abstract return MemLocs tainted, propagate to destination
+                    // This handles the case where secure() returns a primitive value
+                    // Always propagate abstract return MemLocs, even if destination has no points-to info
+                    for return_memloc in &abstract_returns {
+                        state.insert(*return_memloc);
+                    }
+
+                    // Also mark any MemLocs the destination points to as tainted
+                    if any_tainted || !abstract_returns.is_empty() {
+                        if let Some(dst_points_to) = self
+                            .facts
+                            .pointer_domain
+                            .get(&(dst_local_idx, dst_field_path.clone()))
+                        {
+                            for (dst_memloc, _) in dst_points_to {
+                                state.insert(*dst_memloc);
+                            }
+                        }
+                    }
+                }
+            }
+            Rvalue::Alloc { kind, args, .. } => {
+                let allocation = MemLoc::Concrete(loc);
+
+                // Check if any operands are tainted
+                let mut any_tainted = false;
+
+                if let AllocArgs::Lit(operands) = args {
+                    match kind {
+                        AllocKind::Tuple => {
+                            // For tuple literals, check each operand
+                            for (field_idx, operand) in operands.iter().enumerate() {
+                                if let Operand::Place(op_place) = operand {
+                                    let (op_local, op_field_path) =
+                                        place_to_local_field_path(op_place);
+                                    if let Some(points_to) =
+                                        self.facts.pointer_domain.get(&(op_local, op_field_path))
+                                    {
+                                        for (memloc, _) in points_to {
+                                            if state.contains(memloc) {
+                                                any_tainted = true;
+                                                // Mark corresponding field as tainted
+                                                // The allocation's field path would be [field_idx]
+                                                // For now, mark the whole allocation as tainted
+                                                state.insert(allocation);
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        _ => {
+                            // For other allocations, conservatively mark as tainted if any operand is tainted
+                            for operand in operands {
+                                if let Operand::Place(op_place) = operand {
+                                    let (op_local, op_field_path) =
+                                        place_to_local_field_path(op_place);
+                                    if let Some(points_to) =
+                                        self.facts.pointer_domain.get(&(op_local, op_field_path))
+                                    {
+                                        for (memloc, _) in points_to {
+                                            if state.contains(memloc) {
+                                                any_tainted = true;
+                                                state.insert(allocation);
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+
+                if any_tainted {
+                    state.insert(allocation);
+                }
+            }
+            Rvalue::Call { f, args } => {
+                // Check if this is a call to secure()
+                let mut is_secure = false;
+                let mut func_name_opt = None;
+
+                match f {
+                    Operand::Func { f: func_name, .. } => {
+                        func_name_opt = Some(*func_name);
+                        if let Some(callee_func) = self.global.find_function(*func_name) {
+                            is_secure = callee_func.secure();
+                        }
+                    }
+                    Operand::Place(f_place) => {
+                        // Function stored in a local - check if we can determine which function
+                        // For now, check if any secure function could be called
+                        // We'll need to track function values through constant propagation
+                        let (f_local, f_field_path) = place_to_local_field_path(f_place);
+
+                        // Check constant domain to see if this is a known function
+                        if let Some(const_val) = self.facts.constant_domain.get(&loc).get(&f_local)
+                        {
+                            if let Constant::Closure(f_name) = const_val {
+                                func_name_opt = Some(*f_name);
+                                if let Some(callee_func) = self.global.find_function(*f_name) {
+                                    is_secure = callee_func.secure();
+                                }
+                            }
+                        }
+
+                        // Also check all secure functions - if this local could point to any secure function
+                        // This is conservative but necessary
+                        // Collect function names first to avoid borrow conflicts
+                        let secure_funcs: Vec<Symbol> = self
+                            .global
+                            .functions
+                            .iter()
+                            .filter(|f| f.secure())
+                            .map(|f| f.name)
+                            .collect();
+
+                        if let Some(secure_func) = secure_funcs.first() {
+                            // Check if this local could point to any secure function via pointer analysis
+                            if let Some(points_to) =
+                                self.facts.pointer_domain.get(&(f_local, f_field_path))
+                            {
+                                // If the local has any points-to information, it might point to a closure
+                                // For now, conservatively assume it could be a secure function
+                                is_secure = true;
+                                func_name_opt = Some(*secure_func);
+                            }
+                        }
+                    }
+                    _ => {}
+                }
+
+                // Build call context: map caller operands to callee parameter Places
+                let mut call_context = Vec::new();
+
+                if let Some(func_name) = func_name_opt {
+                    if let Some(callee_func) = self.global.find_function(func_name) {
+                        // Map arguments to callee parameters
+                        for (arg_idx, arg) in args.iter().enumerate() {
+                            if arg_idx < callee_func.num_params {
+                                if let Operand::Place(arg_place) = arg {
+                                    // Check if this argument is tainted in current state
+                                    let (arg_local, arg_field_path) =
+                                        place_to_local_field_path(arg_place);
+                                    let mut arg_tainted = false;
+
+                                    if let Some(points_to) =
+                                        self.facts.pointer_domain.get(&(arg_local, arg_field_path))
+                                    {
+                                        for (memloc, _) in points_to {
+                                            if state.contains(memloc) {
+                                                arg_tainted = true;
+                                            }
+                                        }
+                                    }
+
+                                    // Also check for abstract return MemLocs (for primitives)
+                                    for memloc in state.iter() {
+                                        if let MemLoc::Abstract(_, usize::MAX) = memloc {
+                                            arg_tainted = true;
+                                            break;
+                                        }
+                                    }
+
+                                    if arg_tainted {
+                                        // Create Place for callee parameter
+                                        let callee_param_local = LocalIdx::from_usize(arg_idx);
+                                        let callee_param_ty =
+                                            callee_func.locals.value(callee_param_local).ty;
+                                        let callee_place = Place::new(
+                                            callee_param_local,
+                                            arg_place.projection.clone(),
+                                            callee_param_ty,
+                                        );
+                                        call_context.push(callee_place);
+                                    }
+                                }
+                            }
+                        }
+
+                        // Recursively analyze callee (for non-secure functions)
+                        // Only analyze if it's not a recursive call and not secure (secure handled above)
+                        if !is_secure && callee_func.name != self.func.name {
+                            // Note: We have a borrow conflict here - self.facts is borrowed in LocalAnalysis
+                            // but analyze_function needs to borrow self.global.facts. We can work around this
+                            // by ensuring facts are computed before we get here, so analyze_function won't
+                            // need to mutate the facts RefCell.
+                            //
+                            // However, analyze_function can still cause issues if it tries to borrow_mut
+                            // for results. The safest approach is to avoid recursive calls here and instead
+                            // do a separate pass. But that breaks the specification.
+                            //
+                            // Actually, analyze_function only needs to read facts (borrow), not write to them
+                            // if they're already computed. And results uses a different RefCell, so it should work.
+                            // Let's try it - if there's still a conflict, we'll need to restructure.
+                            let callee_tainted =
+                                self.global.analyze_function(callee_func, call_context);
+
+                            // Propagate taint from callee's outputs to return value
+                            state.extend(callee_tainted.iter().cloned());
+                        }
+                    }
+                }
+
+                // If secure(), mark return value as tainted
+                if is_secure {
+                    if let Some(func_name) = func_name_opt {
+                        // Create an abstract MemLoc representing the return value of this secure() call
+                        // Use a special index (usize::MAX) to represent return values
+                        let return_memloc = MemLoc::Abstract(func_name, usize::MAX);
+                        state.insert(return_memloc);
+
+                        // Also mark any MemLocs that the destination points to (for pointer types)
+                        // This handles both primitive and pointer return types
+                        if let Some(dst_points_to) = self
+                            .facts
+                            .pointer_domain
+                            .get(&(dst_local_idx, dst_field_path.clone()))
+                        {
+                            for (memloc, _) in dst_points_to {
+                                state.insert(*memloc);
+                            }
+                        }
+                    }
+                }
+
+                // For unknown functions or recursive calls, conservatively mark return as tainted
+                if !is_secure && matches!(f, Operand::Place(_)) {
+                    // Unknown function call
+                    if let Some(dst_points_to) = self
+                        .facts
+                        .pointer_domain
+                        .get(&(dst_local_idx, dst_field_path.clone()))
+                    {
+                        for (memloc, _) in dst_points_to {
+                            state.insert(*memloc);
+                        }
+                    }
+                }
+            }
+            Rvalue::Cast { op, .. } => {
+                // Propagate taint through casts
+                if let Operand::Place(src_place) = op {
+                    let (src_local, src_field_path) = place_to_local_field_path(src_place);
+                    if let Some(points_to) =
+                        self.facts.pointer_domain.get(&(src_local, src_field_path))
+                    {
+                        for (memloc, _) in points_to {
+                            if state.contains(memloc) {
+                                // Propagate to destination
+                                if let Some(dst_points_to) = self
+                                    .facts
+                                    .pointer_domain
+                                    .get(&(dst_local_idx, dst_field_path.clone()))
+                                {
+                                    for (dst_memloc, _) in dst_points_to {
+                                        state.insert(*dst_memloc);
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            _ => {
+                // Other rvalues: propagate taint conservatively through pointer analysis
+            }
+        }
+    }
+
+    fn handle_terminator(&self, state: &mut Self::Domain, terminator: &Terminator, _loc: Location) {
+        // For return statements, taint is already in state
+        // This is a no-op since we're forward analysis
+        match terminator.kind() {
+            TerminatorKind::Return(_) => {
+                // Taint is already propagated to return value in handle_statement
+            }
+            _ => {}
+        }
+    }
+}
+
+impl JoinSemiLattice for TaintedMemLocs {
+    fn join(&mut self, other: &Self) -> bool {
+        let before_len = self.len();
+        self.extend(other.iter().cloned());
+        self.len() > before_len
     }
 }
