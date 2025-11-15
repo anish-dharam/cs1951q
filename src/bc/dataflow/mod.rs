@@ -828,10 +828,6 @@ pub fn stack_allocate(func: &mut Function) -> bool {
             .name
             .map(|s| format!("{:?}", s))
             .unwrap_or_else(|| format!("<unnamed local {}>", local.index()));
-        println!(
-            "local: {:?} ({}), field_path: {:?}",
-            local, var_name, field_path
-        );
     }
     for ((local, field_path), points_to) in pointer_domain.iter() {
         let local_data = func.locals.value(*local);
@@ -844,10 +840,7 @@ pub fn stack_allocate(func: &mut Function) -> bool {
         } else {
             format!(".{:?}", field_path.0)
         };
-        println!("{}{} points_to: {:?}", var_name, field_path_str, points_to);
     }
-
-    println!("tdone with function: {:?}\n\n", func.name);
 
     // compute which allocations escape
     let escaping_allocations = {

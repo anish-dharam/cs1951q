@@ -36,6 +36,7 @@ pub fn run(_tcx: Tcx, prog: &bc::Program, opts: SymexOptions) -> Result<()> {
     for f in symex_funcs {
         execute_function(&engine, &f, prog)?;
     }
+    println!("No assertion failures detected.");
     Ok(())
 }
 
@@ -688,6 +689,7 @@ impl AbstractConfig<'_> {
                             let mut test_solver = test_solver;
                             test_solver.assert(&cond_bool.not());
                             if test_solver.check() == SatResult::Sat {
+                                println!("test_solver: {:?}", test_solver);
                                 anyhow::bail!(
                                     "Assertion failure detected (condition can be false)"
                                 );

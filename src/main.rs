@@ -73,9 +73,12 @@ fn run(args: &Args, input: &Input) -> Result<()> {
 
     rice::analyze(&bc)?;
 
-    let opts = OptimizeOptions {
-        opt_level: args.opt_level,
+    // Skip optimizations in symex mode
+    let opt_level = match &args.command {
+        Some(Command::Symex { .. }) => OptLevel::NoOpt,
+        _ => args.opt_level,
     };
+    let opts = OptimizeOptions { opt_level };
     rice::optimize(&mut bc, opts);
     log::debug!("Optimized BC:\n{bc}");
     if args.dump_ir {
@@ -105,9 +108,7 @@ fn exec(args: &Args, tcx: Tcx, bc: bc::Program) -> Result<()> {
 fn symex(tcx: Tcx, bc: bc::Program, max_steps: Option<u64>) -> Result<()> {
     fn symex(tcx: Tcx, bc: bc::Program, max_steps: Option<u64>) -> anyhow::Result<()> {
         use rice::rt::symex;
-        let opts = symex::SymexOptions {
-            max_steps,
-        };
+        let opts = symex::SymexOptions { max_steps };
         symex::run(tcx, &bc, opts)?;
         Ok(())
     }
