@@ -1,0 +1,5 @@
+// symex
+#[symex]
+fn example() {
+  assert(1 + 1 == 2)
+}

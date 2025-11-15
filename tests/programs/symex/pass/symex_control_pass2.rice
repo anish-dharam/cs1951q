@@ -1,0 +1,11 @@
+// symex
+#[symex]
+fn example(x: int) {
+  if x > 0 {
+    ()
+  } else {
+    if x == 1 {
+      assert(false)
+    }
+  }
+}

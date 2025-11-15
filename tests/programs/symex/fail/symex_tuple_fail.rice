@@ -1,0 +1,7 @@
+// symex
+#[symex]
+fn example(a: (int, string), b: (bool, float)) {
+  if b.0 && b.1 > 0. {
+    assert(a.0 == 0 || a.1 == "Hello")
+  }
+}

@@ -1,0 +1,5 @@
+// symex --max-steps 10
+#[symex]
+fn example() {
+  loop { () }
+}

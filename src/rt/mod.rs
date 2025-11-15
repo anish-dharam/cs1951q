@@ -54,6 +54,7 @@ use crate::{
 mod codegen;
 pub mod conversions;
 mod reloop;
+pub mod symex;
 
 /// The central data structure for the runtime.
 ///

@@ -92,6 +92,11 @@ impl Function {
         self.annots.iter().any(|annot| annot.name == "jit")
     }
 
+    /// Returns true if the function is annotated with `#[symex]`.
+    pub fn symex(&self) -> bool {
+        self.annots.iter().any(|annot| annot.name == "symex")
+    }
+
     /// Returns true if the function is annotated with `#[secure]`.
     pub fn secure(&self) -> bool {
         self.annots.iter().any(|annot| annot.name == "secure")

@@ -1,0 +1,14 @@
+// symex
+
+fn sign(x: int) -> int {
+  if x >= 0 {
+    1
+  } else {
+    -1
+  }
+}
+
+#[symex]
+fn example(x: int) {
+  assert(sign(x) * x >= 0)
+}

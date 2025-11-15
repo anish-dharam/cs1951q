@@ -18,6 +18,8 @@ use std::{
 enum Command {
     /// Execute the source file.
     Exec,
+    /// Run symbolic execution on functions annotated with #[symex].
+    Symex,
 }
 
 #[derive(Parser)]
@@ -78,7 +80,7 @@ fn run(args: &Args, input: &Input) -> Result<()> {
 
     match &args.command {
         None | Some(Command::Exec) => exec(args, tcx, bc),
-        // add additional commands here
+        Some(Command::Symex) => symex(tcx, bc),
     }
 }
 
@@ -94,6 +96,16 @@ fn exec(args: &Args, tcx: Tcx, bc: bc::Program) -> Result<()> {
         Ok(())
     }
     exec(args, tcx, bc).map_err(|e| miette!("{e:?}"))
+}
+
+fn symex(tcx: Tcx, bc: bc::Program) -> Result<()> {
+    fn symex(tcx: Tcx, bc: bc::Program) -> anyhow::Result<()> {
+        use rice::rt::symex;
+        let opts = symex::SymexOptions::default();
+        symex::run(tcx, &bc, opts)?;
+        Ok(())
+    }
+    symex(tcx, bc).map_err(|e| miette!("{e:?}"))
 }
 
 fn dump_ir<T: Serialize>(t: &T, input: &Input, ext: &str) -> Result<()> {

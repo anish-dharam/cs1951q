@@ -1,0 +1,10 @@
+// symex
+fn id(x: int) -> int {
+  x
+}
+
+#[symex]
+fn example(x: int) {
+  assert(id(x) == x)
+}
+

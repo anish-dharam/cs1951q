@@ -1,0 +1,7 @@
+// symex
+#[symex]
+fn example(x: int) {
+  let y = x + 1 in
+  x := y * 2;
+  assert(x > 0)
+}

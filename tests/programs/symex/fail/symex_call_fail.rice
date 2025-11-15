@@ -1,0 +1,8 @@
+// symex
+fn add1(x: int) -> int { x + 1 }
+
+#[symex]
+fn example(n: int) {
+  assert(add1(n) > 0)
+}
+

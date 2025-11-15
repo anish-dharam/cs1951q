@@ -1,0 +1,24 @@
+// symex
+#[symex]
+fn parse(s: [string]) {
+  if s[0] != "a" {
+    return ()
+  };
+
+  if s[1] != "b" {
+    return ()
+  };
+
+  if s[2] != "c" {
+    return ()
+  };
+
+  let prefix = s[0] ^ s[1] ^ s[2] in
+  let i = 0 in
+  let acc = "" in
+  while i < 5 {
+    acc := acc ^ s[3 + i];
+    i := i + 1
+  };
+  assert(prefix == "abc")
+}

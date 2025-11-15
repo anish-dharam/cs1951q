@@ -1,0 +1,5 @@
+// symex
+#[symex]
+fn example(x: int) {
+  assert(x == 0)
+}

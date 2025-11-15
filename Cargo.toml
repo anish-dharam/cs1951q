@@ -30,6 +30,7 @@ thiserror = "2.0.12"
 wasm-encoder = "0.238.0"
 wasmparser = "=0.236.0" # Keep this the same as wasmtime
 wasmprinter = "0.238.0"
+z3 = "0.19.2"
 
 [dependencies.wasmtime]
 version = "36.0.2"

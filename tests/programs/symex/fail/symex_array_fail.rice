@@ -1,0 +1,7 @@
+// symex
+#[symex]
+fn example(x: [int]) {
+  if x[0] > 0 {
+    assert(x[1] - x[0] < 10)
+  }
+}
