@@ -19,7 +19,11 @@ enum Command {
     /// Execute the source file.
     Exec,
     /// Run symbolic execution on functions annotated with #[symex].
-    Symex,
+    Symex {
+        /// Maximum number of steps to execute per path. Paths exceeding this limit are discarded.
+        #[arg(long)]
+        max_steps: Option<u64>,
+    },
 }
 
 #[derive(Parser)]
@@ -80,7 +84,7 @@ fn run(args: &Args, input: &Input) -> Result<()> {
 
     match &args.command {
         None | Some(Command::Exec) => exec(args, tcx, bc),
-        Some(Command::Symex) => symex(tcx, bc),
+        Some(Command::Symex { max_steps }) => symex(tcx, bc, *max_steps),
     }
 }
 
@@ -98,14 +102,16 @@ fn exec(args: &Args, tcx: Tcx, bc: bc::Program) -> Result<()> {
     exec(args, tcx, bc).map_err(|e| miette!("{e:?}"))
 }
 
-fn symex(tcx: Tcx, bc: bc::Program) -> Result<()> {
-    fn symex(tcx: Tcx, bc: bc::Program) -> anyhow::Result<()> {
+fn symex(tcx: Tcx, bc: bc::Program, max_steps: Option<u64>) -> Result<()> {
+    fn symex(tcx: Tcx, bc: bc::Program, max_steps: Option<u64>) -> anyhow::Result<()> {
         use rice::rt::symex;
-        let opts = symex::SymexOptions::default();
+        let opts = symex::SymexOptions {
+            max_steps,
+        };
         symex::run(tcx, &bc, opts)?;
         Ok(())
     }
-    symex(tcx, bc).map_err(|e| miette!("{e:?}"))
+    symex(tcx, bc, max_steps).map_err(|e| miette!("{e:?}"))
 }
 
 fn dump_ir<T: Serialize>(t: &T, input: &Input, ext: &str) -> Result<()> {
