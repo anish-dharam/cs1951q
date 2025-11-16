@@ -1,7 +1,7 @@
 use anyhow::{Context, Result};
 use either::Either;
 use smallvec::{SmallVec, smallvec};
-use std::{collections::HashMap, collections::VecDeque};
+use std::{collections::HashMap, collections::VecDeque, str::FromStr};
 use z3::{
     SatResult, Solver, ast::Array, ast::Bool, ast::Dynamic, ast::Float as Z3Float, ast::Int,
     ast::String as Z3String,
@@ -152,7 +152,13 @@ impl AbstractConfig<'_> {
                 bc::Const::Bool(b) => Ok(Dynamic::from_ast(&Bool::from_bool(*b))),
                 bc::Const::Int(i) => Ok(Dynamic::from_ast(&Int::from_i64(*i as i64))),
                 bc::Const::Float(f) => Ok(Dynamic::from_ast(&Z3Float::from_f32(f.into_inner()))),
-                bc::Const::String(s) => Ok(Dynamic::from_ast(&Z3String::new_const(s.as_str()))),
+                bc::Const::String(s) => {
+                    // For string constants, create a Z3 string constant from the literal value
+                    // Use FromStr trait to parse the string literal into a Z3 string constant
+                    let str_const = Z3String::from_str(s)
+                        .map_err(|e| anyhow::anyhow!("Failed to create string constant: {}", e))?;
+                    Ok(Dynamic::from_ast(&str_const))
+                }
             },
             bc::Operand::Place(p) => self.eval_place(p, locals),
             bc::Operand::Func { .. } => {
@@ -281,7 +287,9 @@ impl AbstractConfig<'_> {
                         anyhow::bail!("Bitwise operations not supported in symbolic execution")
                     }
                     crate::tir::types::Binop::Concat => {
-                        anyhow::bail!("String concatenation not supported in symbolic execution")
+                        let l = left_val.as_string().context("Concat requires string")?;
+                        let r = right_val.as_string().context("Concat requires string")?;
+                        Dynamic::from_ast(&Z3String::concat(&[&l, &r]))
                     }
                 };
 
@@ -685,8 +693,7 @@ impl AbstractConfig<'_> {
                             let cond_bool = condition
                                 .as_bool()
                                 .context("Assert condition must be boolean")?;
-                            let test_solver = self.path.clone();
-                            let mut test_solver = test_solver;
+                            let mut test_solver = self.path.clone();
                             test_solver.assert(&cond_bool.not());
                             if test_solver.check() == SatResult::Sat {
                                 println!("test_solver: {:?}", test_solver);
@@ -791,8 +798,7 @@ impl AbstractConfig<'_> {
                             let cond_bool = condition
                                 .as_bool()
                                 .context("Assert condition must be boolean")?;
-                            let test_solver = self.path.clone();
-                            let mut test_solver = test_solver;
+                            let mut test_solver = self.path.clone();
                             test_solver.assert(&cond_bool.not());
                             if test_solver.check() == SatResult::Sat {
                                 anyhow::bail!(
