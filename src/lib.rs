@@ -22,4 +22,4 @@ lalrpop_mod!(
 
 pub use ast::{parse, read};
 pub use bc::{analyze, lower, optimize};
-pub use tir::typecheck;
+pub use tir::{rewrite_terms, typecheck};

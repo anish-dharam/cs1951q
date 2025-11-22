@@ -7,6 +7,7 @@ use rice::{
     tir::Tcx,
     utils::Symbol,
 };
+
 use serde::Serialize;
 use std::{
     fs::File,
@@ -18,6 +19,8 @@ use std::{
 enum Command {
     /// Execute the source file.
     Exec,
+    // E-graph optimizations
+    Rewrite,
     /// Run symbolic execution on functions annotated with #[symex].
     Symex {
         /// Maximum number of steps to execute per path. Paths exceeding this limit are discarded.
@@ -62,8 +65,18 @@ fn run(args: &Args, input: &Input) -> Result<()> {
     let ast = rice::parse(input)?;
     log::debug!("AST:\n{}", ast.prog);
 
-    let (tcx, tir) = rice::typecheck(ast)?;
-    log::debug!("TIR:\n{tir}");
+    let (original_tcx, original_tir) = rice::typecheck(ast)?;
+    log::debug!("TIR:\n{original_tir}");
+
+    let (tcx, tir) = match &args.command {
+        Some(Command::Rewrite) => {
+            println!("E-graph optimization");
+            let (new_tcx, new_tir) = rice::rewrite_terms(original_tcx, original_tir);
+            log::debug!("TIR with e-graph rewrites:\n{new_tir}");
+            (new_tcx, new_tir)
+        }
+        _ => (original_tcx, original_tir),
+    };
 
     let mut bc = rice::lower(&tcx, tir);
     log::debug!("Initial BC:\n{bc}");
@@ -86,7 +99,7 @@ fn run(args: &Args, input: &Input) -> Result<()> {
     }
 
     match &args.command {
-        None | Some(Command::Exec) => exec(args, tcx, bc),
+        None | Some(Command::Exec) | Some(Command::Rewrite) => exec(args, tcx, bc),
         Some(Command::Symex { max_steps }) => symex(tcx, bc, *max_steps),
     }
 }

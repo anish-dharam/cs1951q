@@ -87,6 +87,7 @@ fn execute_function(engine: &SymexEngine, func: &bc::Function, prog: &bc::Progra
                 queue.extend(res);
             }
             Err(e) => {
+                println!("Error: {:?}", e);
                 return Err(e);
             }
         }
@@ -152,13 +153,10 @@ impl AbstractConfig<'_> {
                 bc::Const::Bool(b) => Ok(Dynamic::from_ast(&Bool::from_bool(*b))),
                 bc::Const::Int(i) => Ok(Dynamic::from_ast(&Int::from_i64(*i as i64))),
                 bc::Const::Float(f) => Ok(Dynamic::from_ast(&Z3Float::from_f32(f.into_inner()))),
-                bc::Const::String(s) => {
-                    // For string constants, create a Z3 string constant from the literal value
-                    // Use FromStr trait to parse the string literal into a Z3 string constant
-                    let str_const = Z3String::from_str(s)
-                        .map_err(|e| anyhow::anyhow!("Failed to create string constant: {}", e))?;
-                    Ok(Dynamic::from_ast(&str_const))
-                }
+                bc::Const::String(s) => Ok(Dynamic::from_ast(
+                    &Z3String::from_str(s.as_str())
+                        .context("Failed to create Z3 string literal")?,
+                )),
             },
             bc::Operand::Place(p) => self.eval_place(p, locals),
             bc::Operand::Func { .. } => {

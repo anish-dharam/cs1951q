@@ -7,6 +7,8 @@ use self::types::Program;
 use crate::ast;
 use miette::Result;
 
+use egg;
+
 mod closure;
 mod desugar;
 mod print;
@@ -24,4 +26,8 @@ pub fn typecheck(prog: ast::Ast) -> Result<(Tcx, Program)> {
     closure::closure_conversion(&tcx, &mut tir);
     // println!("{:?}", tir.functions());
     Ok((tcx, tir))
+}
+
+pub fn rewrite_terms(tcx: Tcx, tir: Program) -> (Tcx, Program) {
+    (tcx, tir)
 }
