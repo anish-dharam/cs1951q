@@ -85,6 +85,15 @@ fn make_rules() -> Vec<Rewrite<TirLang, ()>> {
         rewrite!("add-0"; "(+ ?a 0)" => "?a"),
         rewrite!("mul-0"; "(* ?a 0)" => "0"),
         rewrite!("mul-1"; "(* ?a 1)" => "?a"),
+        rewrite!("sub-zero"; "(- ?x 0)" => "?x"),
+        rewrite!("div-one"; "(/ ?x 1)" => "?x"),
+        rewrite!("eq-self"; "(== ?x ?x)" => "true"),
+        rewrite!("lt-self"; "(< ?x ?x)" => "false"),
+        rewrite!("gt-self"; "(> ?x ?x)" => "false"),
+        rewrite!("lte-self"; "(<= ?x ?x)" => "true"),
+        rewrite!("gte-self"; "(>= ?x ?x)" => "true"),
+        rewrite!("add-assoc"; "(+ (+ ?a ?b) ?c)" => "(+ ?a (+ ?b ?c))"),
+        rewrite!("mul-assoc"; "(* (* ?a ?b) ?c)" => "(* ?a (* ?b ?c))"),
     ]
 }
 
@@ -309,8 +318,6 @@ fn expr_to_egg(expr: &Expr, egraph: &mut EGraph<TirLang, ()>) -> Id {
 }
 
 pub fn main(tcx: Tcx, tir: Program) -> (Tcx, Program) {
-    println!("{}", simplify("(if (if true true false) 1 2)"));
-
     let mut egraph = EGraph::<TirLang, ()>::default();
     let mut main_id = None;
     let same_add: Pattern<TirLang> = "(+ ?a 0)".parse().unwrap();
