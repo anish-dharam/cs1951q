@@ -26,6 +26,6 @@ fn main() {
     * 1)
     * 1)
     * 1)
-    
-  }
+  };
+  println(int_to_string(z)) // here so that DCE doesn't eliminate z, for comparing O1 vs egg
 }

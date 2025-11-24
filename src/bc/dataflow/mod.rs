@@ -1289,11 +1289,20 @@ impl Analysis for DeadCodeAnalysis {
     fn handle_terminator(&self, state: &mut Self::Domain, terminator: &Terminator, loc: Location) {
         match terminator.kind() {
             super::types::TerminatorKind::Return(operand) => match operand {
-                crate::bc::types::Operand::Const(_) => (),
-                crate::bc::types::Operand::Place(place) => {
+                Operand::Place(place) => {
                     state.insert(place.local);
                 }
-                crate::bc::types::Operand::Func { f, ty } => (),
+                _ => (),
+            },
+            super::types::TerminatorKind::CondJump {
+                cond,
+                true_,
+                false_,
+            } => match cond {
+                Operand::Place(place) => {
+                    state.insert(place.local);
+                }
+                _ => (),
             },
             _ => (),
         }
