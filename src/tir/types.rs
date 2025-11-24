@@ -222,6 +222,7 @@ impl Expr {
     }
 }
 
+#[derive(Debug)]
 pub struct Program(Vec<Function>);
 
 impl Program {

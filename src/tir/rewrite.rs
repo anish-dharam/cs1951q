@@ -343,6 +343,7 @@ fn expr_to_egg(
 /// Convert a RecExpr node at the given index to an Expr.
 fn rec_expr_to_expr(rec_expr: &RecExpr<TirLang>, idx: Id, type_span_map: &TypeSpanMap) -> Expr {
     let (ty, span) = type_span_map.get(idx.into());
+
     let kind = rec_expr_to_expr_kind(rec_expr, idx, type_span_map);
     Expr { kind, ty, span }
 }
@@ -771,7 +772,6 @@ pub fn main(tcx: Tcx, tir: Program) -> (Tcx, Program) {
         let body_id = expr_to_egg(&func.body, &mut egraph, &mut type_span_map);
         function_data.push((func.clone(), body_id));
     }
-    println!("got ehre");
 
     let runner = Runner::default().with_egraph(egraph).run(&make_rules());
     let extractor = Extractor::new(&runner.egraph, AstSize);
@@ -782,11 +782,18 @@ pub fn main(tcx: Tcx, tir: Program) -> (Tcx, Program) {
         .map(|(mut func, body_id)| {
             let (_cost, optimized_rec_expr) = extractor.find_best(body_id);
 
-            // let root_idx = Id::from(optimized_rec_expr.as_ref().len() - 1);
-            func.body = rec_expr_to_expr(&optimized_rec_expr, body_id, &type_span_map);
+            let root_idx = Id::from(optimized_rec_expr.as_ref().len() - 1);
+            // func.body = rec_expr_to_expr(&optimized_rec_expr, body_id, &type_span_map); not sure why this doesn't work
+            func.body = rec_expr_to_expr(&optimized_rec_expr, root_idx, &type_span_map);
             func
         })
         .collect();
+
+    // println!(
+    //     "Rewrote \n {:?} \n into \n {:?}",
+    //     tir,
+    //     Program::new(optimized_functions.clone())
+    // );
 
     (tcx, Program::new(optimized_functions))
 }
