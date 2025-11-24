@@ -3,16 +3,47 @@
 //! The TIR is an expression-oriented IR with types attached to each expression node,
 //! and with some AST features removed.
 
-use super::types::{Expr, ExprKind, MethodRef, Program};
-use crate::ast::types::{Binop, Const, ParamList, Type};
+use super::types::{Expr, ExprKind, Function, MethodRef, Program};
+use crate::ast::types::{Binop, Const, ParamList, Span, Type};
 use crate::utils::Symbol;
 use ordered_float::OrderedFloat;
+use std::collections::HashMap;
 
 use egg::{
     AstSize, EGraph, Extractor, Id, Pattern, RecExpr, Rewrite, Runner, define_language, rewrite,
 };
 
 pub use super::typeck::Tcx;
+
+/// maps RecExpr node indices to their type and span information.
+/// Used to preserve type/span information when converting between Expr and TirLang.
+#[derive(Debug, Clone)]
+pub struct TypeSpanMap {
+    /// Map from RecExpr node index to (Type, Span)
+    pub map: HashMap<usize, (Type, Span)>,
+    /// Default span to use when not found
+    pub default_span: Span,
+}
+
+impl TypeSpanMap {
+    pub fn new(default_span: Span) -> Self {
+        TypeSpanMap {
+            map: HashMap::new(),
+            default_span,
+        }
+    }
+
+    pub fn insert(&mut self, idx: usize, ty: Type, span: Span) {
+        self.map.insert(idx, (ty, span));
+    }
+
+    pub fn get(&self, idx: usize) -> (Type, Span) {
+        self.map
+            .get(&idx)
+            .copied()
+            .unwrap_or((Type::unit(), self.default_span))
+    }
+}
 
 define_language! {
     enum TirLang {
@@ -71,7 +102,6 @@ define_language! {
         "break" = Break,
         "arrayliteral" = ArrayLiteral(Vec<Id>),
         "arrayindex" = ArrayIndex([Id; 2]), // first should be array, second should be index
-        Count(usize), // should never be used by itself
         "arraycopy" = ArrayCopy([Id; 2]), // first should be value, second should be count
 
     }
@@ -97,35 +127,6 @@ fn make_rules() -> Vec<Rewrite<TirLang, ()>> {
     ]
 }
 
-/// parse an expression, simplify it using egg, and pretty print it back out
-fn simplify(s: &str) -> String {
-    // parse the expression, the type annotation tells it which Language to use
-    let expr: RecExpr<TirLang> = s.parse().unwrap();
-
-    // simplify the expression using a Runner, which creates an e-graph with
-    // the given expression and runs the given rules over it
-    let runner = Runner::default().with_expr(&expr).run(&make_rules());
-
-    // the Runner knows which e-class the expression given with `with_expr` is in
-    let root = runner.roots[0];
-
-    // use an Extractor to pick the best element of the root eclass
-    let extractor = Extractor::new(&runner.egraph, AstSize);
-    let (best_cost, best) = extractor.find_best(root);
-    println!("Simplified {} to {} with cost {}", expr, best, best_cost);
-    best.to_string()
-}
-
-/// Convert a Vec<Expr> to a list representation in the e-graph
-// fn vec_to_list(
-//     exprs: &[Expr],
-//     egraph: &mut EGraph<TirLang, ()>,
-//     convert_fn: &mut dyn FnMut(&Expr, &mut EGraph<TirLang, ()>) -> Id,
-// ) -> Id {
-//     let head_id = convert_fn(&exprs[0], egraph);
-//     let tail_id = vec_to_list(&exprs[1..], egraph, convert_fn);
-// }
-
 fn symbol_id(egraph: &mut EGraph<TirLang, ()>, sym: Symbol) -> Id {
     egraph.add(TirLang::Var(sym))
 }
@@ -134,8 +135,15 @@ fn type_id(egraph: &mut EGraph<TirLang, ()>, ty: &Type) -> Id {
     egraph.add(TirLang::Type(*ty))
 }
 
-fn expr_vec_ids(exprs: &[Expr], egraph: &mut EGraph<TirLang, ()>) -> Vec<Id> {
-    exprs.iter().map(|expr| expr_to_egg(expr, egraph)).collect()
+fn expr_vec_ids(
+    exprs: &[Expr],
+    egraph: &mut EGraph<TirLang, ()>,
+    type_span_map: &mut TypeSpanMap,
+) -> Vec<Id> {
+    exprs
+        .iter()
+        .map(|expr| expr_to_egg(expr, egraph, type_span_map))
+        .collect()
 }
 
 fn paramlist_id(params: &ParamList, egraph: &mut EGraph<TirLang, ()>) -> Id {
@@ -151,13 +159,21 @@ fn env_paramlist_id(env: &ParamList, egraph: &mut EGraph<TirLang, ()>) -> Id {
     egraph.add(TirLang::EnvList(symbols))
 }
 
-fn env_exprs_id(exprs: &[Expr], egraph: &mut EGraph<TirLang, ()>) -> Id {
-    let ids = expr_vec_ids(exprs, egraph);
+fn env_exprs_id(
+    exprs: &[Expr],
+    egraph: &mut EGraph<TirLang, ()>,
+    type_span_map: &mut TypeSpanMap,
+) -> Id {
+    let ids = expr_vec_ids(exprs, egraph, type_span_map);
     egraph.add(TirLang::EnvList(ids))
 }
 
-fn arglist_id(args: &[Expr], egraph: &mut EGraph<TirLang, ()>) -> Id {
-    let ids = expr_vec_ids(args, egraph);
+fn arglist_id(
+    args: &[Expr],
+    egraph: &mut EGraph<TirLang, ()>,
+    type_span_map: &mut TypeSpanMap,
+) -> Id {
+    let ids = expr_vec_ids(args, egraph, type_span_map);
     egraph.add(TirLang::ArgList(ids))
 }
 
@@ -195,9 +211,13 @@ fn binop_id(op: Binop, left: Id, right: Id, egraph: &mut EGraph<TirLang, ()>) ->
     }
 }
 
-/// Convert a TIR expression into an egg `TirLang` node and return its e-graph Id.
-fn expr_to_egg(expr: &Expr, egraph: &mut EGraph<TirLang, ()>) -> Id {
-    match &expr.kind {
+/// Convert a TIR expression into an egg `TirLang` node and return its e-graph Id. Also add type/span info to the map
+fn expr_to_egg(
+    expr: &Expr,
+    egraph: &mut EGraph<TirLang, ()>,
+    type_span_map: &mut TypeSpanMap,
+) -> Id {
+    let id = match &expr.kind {
         ExprKind::Var(sym) => symbol_id(egraph, *sym),
         ExprKind::Const(c) => match c {
             Const::Bool(b) => egraph.add(TirLang::Bool(*b)),
@@ -206,31 +226,31 @@ fn expr_to_egg(expr: &Expr, egraph: &mut EGraph<TirLang, ()>) -> Id {
             Const::String(s) => egraph.add(TirLang::String(s.clone().to_string())),
         },
         ExprKind::Tuple(exprs) => {
-            let ids = expr_vec_ids(exprs, egraph);
+            let ids = expr_vec_ids(exprs, egraph, type_span_map);
             egraph.add(TirLang::Tuple(ids))
         }
         ExprKind::Struct(exprs) => {
-            let ids = expr_vec_ids(exprs, egraph);
+            let ids = expr_vec_ids(exprs, egraph, type_span_map);
             egraph.add(TirLang::Struct(ids))
         }
         ExprKind::Project { e, i } => {
-            let expr_id = expr_to_egg(e, egraph);
+            let expr_id = expr_to_egg(e, egraph, type_span_map);
             let index_id = egraph.add(TirLang::Index(*i));
             egraph.add(TirLang::Project([expr_id, index_id]))
         }
         ExprKind::BinOp { left, right, op } => {
-            let left_id = expr_to_egg(left, egraph);
-            let right_id = expr_to_egg(right, egraph);
+            let left_id = expr_to_egg(left, egraph, type_span_map);
+            let right_id = expr_to_egg(right, egraph, type_span_map);
             binop_id(*op, left_id, right_id, egraph)
         }
         ExprKind::Cast { e, ty } => {
-            let expr_id = expr_to_egg(e, egraph);
+            let expr_id = expr_to_egg(e, egraph, type_span_map);
             let ty_id = type_id(egraph, ty);
             egraph.add(TirLang::Cast([expr_id, ty_id]))
         }
         ExprKind::Call { f, args } => {
-            let f_id = expr_to_egg(f, egraph);
-            let args_id = arglist_id(args, egraph);
+            let f_id = expr_to_egg(f, egraph, type_span_map);
+            let args_id = arglist_id(args, egraph, type_span_map);
             egraph.add(TirLang::Call([f_id, args_id]))
         }
         ExprKind::MethodCall {
@@ -238,9 +258,9 @@ fn expr_to_egg(expr: &Expr, egraph: &mut EGraph<TirLang, ()>) -> Id {
             method,
             args,
         } => {
-            let receiver_id = expr_to_egg(receiver, egraph);
+            let receiver_id = expr_to_egg(receiver, egraph, type_span_map);
             let method_id = methodref_id(method, egraph);
-            let args_id = arglist_id(args, egraph);
+            let args_id = arglist_id(args, egraph, type_span_map);
             egraph.add(TirLang::MethodCall([receiver_id, method_id, args_id]))
         }
         ExprKind::Lambda {
@@ -252,110 +272,521 @@ fn expr_to_egg(expr: &Expr, egraph: &mut EGraph<TirLang, ()>) -> Id {
             let params_id = paramlist_id(params, egraph);
             let env_id = env_paramlist_id(env, egraph);
             let ret_ty_id = type_id(egraph, ret_ty);
-            let body_id = expr_to_egg(body, egraph);
+            let body_id = expr_to_egg(body, egraph, type_span_map);
             egraph.add(TirLang::Lambda([params_id, env_id, ret_ty_id, body_id]))
         }
         ExprKind::Closure { f, env } => {
             let fname_id = egraph.add(TirLang::Fname(*f));
-            let env_id = env_exprs_id(env, egraph);
+            let env_id = env_exprs_id(env, egraph, type_span_map);
             egraph.add(TirLang::Closure([fname_id, env_id]))
         }
         ExprKind::Seq(e1, e2) => {
-            let e1_id = expr_to_egg(e1, egraph);
-            let e2_id = expr_to_egg(e2, egraph);
+            let e1_id = expr_to_egg(e1, egraph, type_span_map);
+            let e2_id = expr_to_egg(e2, egraph, type_span_map);
             egraph.add(TirLang::Seq([e1_id, e2_id]))
         }
         ExprKind::Let { name, ty, e1, e2 } => {
             let name_id = symbol_id(egraph, *name);
             let ty_id = type_id(egraph, ty);
-            let e1_id = expr_to_egg(e1, egraph);
-            let e2_id = expr_to_egg(e2, egraph);
+            let e1_id = expr_to_egg(e1, egraph, type_span_map);
+            let e2_id = expr_to_egg(e2, egraph, type_span_map);
             egraph.add(TirLang::Let([name_id, ty_id, e1_id, e2_id]))
         }
         ExprKind::Return(e) => {
-            let e_id = expr_to_egg(e, egraph);
+            let e_id = expr_to_egg(e, egraph, type_span_map);
             egraph.add(TirLang::Return(e_id))
         }
         ExprKind::Loop(body) => {
-            let body_id = expr_to_egg(body, egraph);
+            let body_id = expr_to_egg(body, egraph, type_span_map);
             egraph.add(TirLang::Loop(body_id))
         }
         ExprKind::While { cond, body } => {
-            let cond_id = expr_to_egg(cond, egraph);
-            let body_id = expr_to_egg(body, egraph);
+            let cond_id = expr_to_egg(cond, egraph, type_span_map);
+            let body_id = expr_to_egg(body, egraph, type_span_map);
             egraph.add(TirLang::While([cond_id, body_id]))
         }
         ExprKind::If { cond, then_, else_ } => {
-            let cond_id = expr_to_egg(cond, egraph);
-            let then_id = expr_to_egg(then_, egraph);
+            let cond_id = expr_to_egg(cond, egraph, type_span_map);
+            let then_id = expr_to_egg(then_, egraph, type_span_map);
             let else_id = else_
                 .as_ref()
-                .map(|expr| expr_to_egg(expr, egraph))
+                .map(|expr| expr_to_egg(expr, egraph, type_span_map))
                 .unwrap_or_else(|| unit_id(egraph));
             egraph.add(TirLang::If([cond_id, then_id, else_id]))
         }
         ExprKind::Assign { dst, src } => {
-            let dst_id = expr_to_egg(dst, egraph);
-            let src_id = expr_to_egg(src, egraph);
+            let dst_id = expr_to_egg(dst, egraph, type_span_map);
+            let src_id = expr_to_egg(src, egraph, type_span_map);
             egraph.add(TirLang::Assign([dst_id, src_id]))
         }
         ExprKind::Break => egraph.add(TirLang::Break),
         ExprKind::ArrayLiteral(exprs) => {
-            let ids = expr_vec_ids(exprs, egraph);
+            let ids = expr_vec_ids(exprs, egraph, type_span_map);
             egraph.add(TirLang::ArrayLiteral(ids))
         }
         ExprKind::ArrayIndex { array, index } => {
-            let array_id = expr_to_egg(array, egraph);
-            let index_id = expr_to_egg(index, egraph);
+            let array_id = expr_to_egg(array, egraph, type_span_map);
+            let index_id = expr_to_egg(index, egraph, type_span_map);
             egraph.add(TirLang::ArrayIndex([array_id, index_id]))
         }
         ExprKind::ArrayCopy { value, count } => {
-            let value_id = expr_to_egg(value, egraph);
-            let count_id = expr_to_egg(count, egraph);
+            let value_id = expr_to_egg(value, egraph, type_span_map);
+            let count_id = expr_to_egg(count, egraph, type_span_map);
             egraph.add(TirLang::ArrayCopy([value_id, count_id]))
         }
+    };
+
+    type_span_map.insert(id.into(), expr.ty, expr.span);
+    id
+}
+
+/// Convert a RecExpr node at the given index to an Expr.
+fn rec_expr_to_expr(rec_expr: &RecExpr<TirLang>, idx: Id, type_span_map: &TypeSpanMap) -> Expr {
+    let (ty, span) = type_span_map.get(idx.into());
+    let kind = rec_expr_to_expr_kind(rec_expr, idx, type_span_map);
+    Expr { kind, ty, span }
+}
+
+/// Convert a RecExpr node at the given index to an ExprKind.
+fn rec_expr_to_expr_kind(
+    rec_expr: &RecExpr<TirLang>,
+    idx: Id,
+    type_span_map: &TypeSpanMap,
+) -> ExprKind {
+    let node = &rec_expr[idx];
+    match node {
+        TirLang::Bool(b) => ExprKind::Const(Const::Bool(*b)),
+        TirLang::Int(i) => ExprKind::Const(Const::Int(*i)),
+        TirLang::Float(f) => ExprKind::Const(Const::Float(*f)),
+        TirLang::String(s) => ExprKind::Const(Const::String(s.clone())),
+        TirLang::Var(sym) => ExprKind::Var(*sym),
+        TirLang::Tuple(ids) => {
+            let exprs = ids_to_exprs(rec_expr, ids, type_span_map);
+            ExprKind::Tuple(exprs)
+        }
+        TirLang::Struct(ids) => {
+            let exprs = ids_to_exprs(rec_expr, ids, type_span_map);
+            ExprKind::Struct(exprs)
+        }
+        TirLang::Project([e_idx, index_idx]) => {
+            let e = rec_expr_to_expr(rec_expr, *e_idx, type_span_map);
+            let index_node = &rec_expr[*index_idx];
+            let i = match index_node {
+                TirLang::Index(i) => *i,
+                _ => panic!("Project second child must be Index"),
+            };
+            ExprKind::Project { e: Box::new(e), i }
+        }
+        TirLang::Add([left, right]) => {
+            let left_expr = rec_expr_to_expr(rec_expr, *left, type_span_map);
+            let right_expr = rec_expr_to_expr(rec_expr, *right, type_span_map);
+            ExprKind::BinOp {
+                left: Box::new(left_expr),
+                right: Box::new(right_expr),
+                op: Binop::Add,
+            }
+        }
+        TirLang::Sub([left, right]) => {
+            let left_expr = rec_expr_to_expr(rec_expr, *left, type_span_map);
+            let right_expr = rec_expr_to_expr(rec_expr, *right, type_span_map);
+            ExprKind::BinOp {
+                left: Box::new(left_expr),
+                right: Box::new(right_expr),
+                op: Binop::Sub,
+            }
+        }
+        TirLang::Mul([left, right]) => {
+            let left_expr = rec_expr_to_expr(rec_expr, *left, type_span_map);
+            let right_expr = rec_expr_to_expr(rec_expr, *right, type_span_map);
+            ExprKind::BinOp {
+                left: Box::new(left_expr),
+                right: Box::new(right_expr),
+                op: Binop::Mul,
+            }
+        }
+        TirLang::Div([left, right]) => {
+            let left_expr = rec_expr_to_expr(rec_expr, *left, type_span_map);
+            let right_expr = rec_expr_to_expr(rec_expr, *right, type_span_map);
+            ExprKind::BinOp {
+                left: Box::new(left_expr),
+                right: Box::new(right_expr),
+                op: Binop::Div,
+            }
+        }
+        TirLang::Rem([left, right]) => {
+            let left_expr = rec_expr_to_expr(rec_expr, *left, type_span_map);
+            let right_expr = rec_expr_to_expr(rec_expr, *right, type_span_map);
+            ExprKind::BinOp {
+                left: Box::new(left_expr),
+                right: Box::new(right_expr),
+                op: Binop::Rem,
+            }
+        }
+        TirLang::Exp([left, right]) => {
+            let left_expr = rec_expr_to_expr(rec_expr, *left, type_span_map);
+            let right_expr = rec_expr_to_expr(rec_expr, *right, type_span_map);
+            ExprKind::BinOp {
+                left: Box::new(left_expr),
+                right: Box::new(right_expr),
+                op: Binop::Exp,
+            }
+        }
+        TirLang::Eq([left, right]) => {
+            let left_expr = rec_expr_to_expr(rec_expr, *left, type_span_map);
+            let right_expr = rec_expr_to_expr(rec_expr, *right, type_span_map);
+            ExprKind::BinOp {
+                left: Box::new(left_expr),
+                right: Box::new(right_expr),
+                op: Binop::Eq,
+            }
+        }
+        TirLang::Neq([left, right]) => {
+            let left_expr = rec_expr_to_expr(rec_expr, *left, type_span_map);
+            let right_expr = rec_expr_to_expr(rec_expr, *right, type_span_map);
+            ExprKind::BinOp {
+                left: Box::new(left_expr),
+                right: Box::new(right_expr),
+                op: Binop::Neq,
+            }
+        }
+        TirLang::Lt([left, right]) => {
+            let left_expr = rec_expr_to_expr(rec_expr, *left, type_span_map);
+            let right_expr = rec_expr_to_expr(rec_expr, *right, type_span_map);
+            ExprKind::BinOp {
+                left: Box::new(left_expr),
+                right: Box::new(right_expr),
+                op: Binop::Lt,
+            }
+        }
+        TirLang::Gt([left, right]) => {
+            let left_expr = rec_expr_to_expr(rec_expr, *left, type_span_map);
+            let right_expr = rec_expr_to_expr(rec_expr, *right, type_span_map);
+            ExprKind::BinOp {
+                left: Box::new(left_expr),
+                right: Box::new(right_expr),
+                op: Binop::Gt,
+            }
+        }
+        TirLang::Le([left, right]) => {
+            let left_expr = rec_expr_to_expr(rec_expr, *left, type_span_map);
+            let right_expr = rec_expr_to_expr(rec_expr, *right, type_span_map);
+            ExprKind::BinOp {
+                left: Box::new(left_expr),
+                right: Box::new(right_expr),
+                op: Binop::Le,
+            }
+        }
+        TirLang::Ge([left, right]) => {
+            let left_expr = rec_expr_to_expr(rec_expr, *left, type_span_map);
+            let right_expr = rec_expr_to_expr(rec_expr, *right, type_span_map);
+            ExprKind::BinOp {
+                left: Box::new(left_expr),
+                right: Box::new(right_expr),
+                op: Binop::Ge,
+            }
+        }
+        TirLang::And([left, right]) => {
+            let left_expr = rec_expr_to_expr(rec_expr, *left, type_span_map);
+            let right_expr = rec_expr_to_expr(rec_expr, *right, type_span_map);
+            ExprKind::BinOp {
+                left: Box::new(left_expr),
+                right: Box::new(right_expr),
+                op: Binop::And,
+            }
+        }
+        TirLang::Or([left, right]) => {
+            let left_expr = rec_expr_to_expr(rec_expr, *left, type_span_map);
+            let right_expr = rec_expr_to_expr(rec_expr, *right, type_span_map);
+            ExprKind::BinOp {
+                left: Box::new(left_expr),
+                right: Box::new(right_expr),
+                op: Binop::Or,
+            }
+        }
+        TirLang::Shl([left, right]) => {
+            let left_expr = rec_expr_to_expr(rec_expr, *left, type_span_map);
+            let right_expr = rec_expr_to_expr(rec_expr, *right, type_span_map);
+            ExprKind::BinOp {
+                left: Box::new(left_expr),
+                right: Box::new(right_expr),
+                op: Binop::Shl,
+            }
+        }
+        TirLang::Shr([left, right]) => {
+            let left_expr = rec_expr_to_expr(rec_expr, *left, type_span_map);
+            let right_expr = rec_expr_to_expr(rec_expr, *right, type_span_map);
+            ExprKind::BinOp {
+                left: Box::new(left_expr),
+                right: Box::new(right_expr),
+                op: Binop::Shr,
+            }
+        }
+        TirLang::BitAnd([left, right]) => {
+            let left_expr = rec_expr_to_expr(rec_expr, *left, type_span_map);
+            let right_expr = rec_expr_to_expr(rec_expr, *right, type_span_map);
+            ExprKind::BinOp {
+                left: Box::new(left_expr),
+                right: Box::new(right_expr),
+                op: Binop::BitAnd,
+            }
+        }
+        TirLang::BitOr([left, right]) => {
+            let left_expr = rec_expr_to_expr(rec_expr, *left, type_span_map);
+            let right_expr = rec_expr_to_expr(rec_expr, *right, type_span_map);
+            ExprKind::BinOp {
+                left: Box::new(left_expr),
+                right: Box::new(right_expr),
+                op: Binop::BitOr,
+            }
+        }
+        TirLang::Concat([left, right]) => {
+            let left_expr = rec_expr_to_expr(rec_expr, *left, type_span_map);
+            let right_expr = rec_expr_to_expr(rec_expr, *right, type_span_map);
+            ExprKind::BinOp {
+                left: Box::new(left_expr),
+                right: Box::new(right_expr),
+                op: Binop::Concat,
+            }
+        }
+        TirLang::Cast([e_idx, ty_idx]) => {
+            let e = rec_expr_to_expr(rec_expr, *e_idx, type_span_map);
+            let ty_node = &rec_expr[*ty_idx];
+            let ty = match ty_node {
+                TirLang::Type(ty) => *ty,
+                _ => panic!("Cast second child must be Type"),
+            };
+            ExprKind::Cast { e: Box::new(e), ty }
+        }
+        TirLang::Call([f_idx, args_idx]) => {
+            let f = rec_expr_to_expr(rec_expr, *f_idx, type_span_map);
+            let args_node = &rec_expr[*args_idx];
+            let args = match args_node {
+                TirLang::ArgList(ids) => ids_to_exprs(rec_expr, ids, type_span_map),
+                _ => panic!("Call second child must be ArgList"),
+            };
+            ExprKind::Call {
+                f: Box::new(f),
+                args,
+            }
+        }
+        TirLang::MethodCall([receiver_idx, method_idx, args_idx]) => {
+            let receiver = rec_expr_to_expr(rec_expr, *receiver_idx, type_span_map);
+            let method_node = &rec_expr[*method_idx];
+            let method = match method_node {
+                TirLang::MethodRef([interface_idx, method_name_idx]) => {
+                    methodref_from_ids(rec_expr, *interface_idx, *method_name_idx)
+                }
+                _ => panic!("MethodCall second child must be MethodRef"),
+            };
+            let args_node = &rec_expr[*args_idx];
+            let args = match args_node {
+                TirLang::ArgList(ids) => ids_to_exprs(rec_expr, ids, type_span_map),
+                _ => panic!("MethodCall third child must be ArgList"),
+            };
+            ExprKind::MethodCall {
+                receiver: Box::new(receiver),
+                method,
+                args,
+            }
+        }
+        TirLang::Lambda([params_idx, env_idx, ret_ty_idx, body_idx]) => {
+            let params_node = &rec_expr[*params_idx];
+            let params = match params_node {
+                TirLang::ParamList(ids) => paramlist_from_ids(rec_expr, ids),
+                _ => panic!("Lambda first child must be ParamList"),
+            };
+            let env_node = &rec_expr[*env_idx];
+            let env = match env_node {
+                TirLang::EnvList(ids) => paramlist_from_ids(rec_expr, ids),
+                _ => panic!("Lambda second child must be EnvList"),
+            };
+            let ret_ty_node = &rec_expr[*ret_ty_idx];
+            let ret_ty = match ret_ty_node {
+                TirLang::Type(ty) => *ty,
+                _ => panic!("Lambda third child must be Type"),
+            };
+            let body = rec_expr_to_expr(rec_expr, *body_idx, type_span_map);
+            ExprKind::Lambda {
+                params,
+                env,
+                ret_ty,
+                body: Box::new(body),
+            }
+        }
+        TirLang::Closure([fname_idx, env_idx]) => {
+            let fname_node = &rec_expr[*fname_idx];
+            let f = match fname_node {
+                TirLang::Fname(sym) => *sym,
+                _ => panic!("Closure first child must be Fname"),
+            };
+            let env_node = &rec_expr[*env_idx];
+            let env = match env_node {
+                TirLang::EnvList(ids) => ids_to_exprs(rec_expr, ids, type_span_map),
+                _ => panic!("Closure second child must be EnvList"),
+            };
+            ExprKind::Closure { f, env }
+        }
+        TirLang::Seq([e1_idx, e2_idx]) => {
+            let e1 = rec_expr_to_expr(rec_expr, *e1_idx, type_span_map);
+            let e2 = rec_expr_to_expr(rec_expr, *e2_idx, type_span_map);
+            ExprKind::Seq(Box::new(e1), Box::new(e2))
+        }
+        TirLang::Let([name_idx, ty_idx, e1_idx, e2_idx]) => {
+            let name_node = &rec_expr[*name_idx];
+            let name = match name_node {
+                TirLang::Var(sym) => *sym,
+                _ => panic!("Let first child must be Var"),
+            };
+            let ty_node = &rec_expr[*ty_idx];
+            let ty = match ty_node {
+                TirLang::Type(ty) => *ty,
+                _ => panic!("Let second child must be Type"),
+            };
+            let e1 = rec_expr_to_expr(rec_expr, *e1_idx, type_span_map);
+            let e2 = rec_expr_to_expr(rec_expr, *e2_idx, type_span_map);
+            ExprKind::Let {
+                name,
+                ty,
+                e1: Box::new(e1),
+                e2: Box::new(e2),
+            }
+        }
+        TirLang::Return(e_idx) => {
+            let e = rec_expr_to_expr(rec_expr, *e_idx, type_span_map);
+            ExprKind::Return(Box::new(e))
+        }
+        TirLang::Loop(body_idx) => {
+            let body = rec_expr_to_expr(rec_expr, *body_idx, type_span_map);
+            ExprKind::Loop(Box::new(body))
+        }
+        TirLang::While([cond_idx, body_idx]) => {
+            let cond = rec_expr_to_expr(rec_expr, *cond_idx, type_span_map);
+            let body = rec_expr_to_expr(rec_expr, *body_idx, type_span_map);
+            ExprKind::While {
+                cond: Box::new(cond),
+                body: Box::new(body),
+            }
+        }
+        TirLang::If([cond_idx, then_idx, else_idx]) => {
+            let cond = rec_expr_to_expr(rec_expr, *cond_idx, type_span_map);
+            let then_ = rec_expr_to_expr(rec_expr, *then_idx, type_span_map);
+            let else_ = rec_expr_to_expr(rec_expr, *else_idx, type_span_map);
+            // Check if else_ is a unit tuple (empty), which means no else branch
+            let else_expr = match &else_.kind {
+                ExprKind::Tuple(exprs) if exprs.is_empty() => None,
+                _ => Some(Box::new(else_)),
+            };
+            ExprKind::If {
+                cond: Box::new(cond),
+                then_: Box::new(then_),
+                else_: else_expr,
+            }
+        }
+        TirLang::Assign([dst_idx, src_idx]) => {
+            let dst = rec_expr_to_expr(rec_expr, *dst_idx, type_span_map);
+            let src = rec_expr_to_expr(rec_expr, *src_idx, type_span_map);
+            ExprKind::Assign {
+                dst: Box::new(dst),
+                src: Box::new(src),
+            }
+        }
+        TirLang::Break => ExprKind::Break,
+        TirLang::ArrayLiteral(ids) => {
+            let exprs = ids_to_exprs(rec_expr, ids, type_span_map);
+            ExprKind::ArrayLiteral(exprs)
+        }
+        TirLang::ArrayIndex([array_idx, index_idx]) => {
+            let array = rec_expr_to_expr(rec_expr, *array_idx, type_span_map);
+            let index = rec_expr_to_expr(rec_expr, *index_idx, type_span_map);
+            ExprKind::ArrayIndex {
+                array: Box::new(array),
+                index: Box::new(index),
+            }
+        }
+        TirLang::ArrayCopy([value_idx, count_idx]) => {
+            let value = rec_expr_to_expr(rec_expr, *value_idx, type_span_map);
+            let count = rec_expr_to_expr(rec_expr, *count_idx, type_span_map);
+            ExprKind::ArrayCopy {
+                value: Box::new(value),
+                count: Box::new(count),
+            }
+        }
+        TirLang::Index(_) => panic!("Index should not be used as root node"),
+        TirLang::Type(_) => panic!("Type should not be used as root node"),
+        TirLang::ArgList(_) => panic!("ArgList should not be used as root node"),
+        TirLang::MethodRef(_) => panic!("MethodRef should not be used as root node"),
+        TirLang::ParamList(_) => panic!("ParamList should not be used as root node"),
+        TirLang::EnvList(_) => panic!("EnvList should not be used as root node"),
+        TirLang::Fname(_) => panic!("Fname should not be used as root node"),
     }
+}
+
+/// Convert a Vec<Id> to a Vec<Expr>.
+fn ids_to_exprs(rec_expr: &RecExpr<TirLang>, ids: &[Id], type_span_map: &TypeSpanMap) -> Vec<Expr> {
+    ids.iter()
+        .map(|&id| rec_expr_to_expr(rec_expr, id, type_span_map))
+        .collect()
+}
+
+/// Reconstruct a ParamList from a Vec<Id> of Var nodes.
+fn paramlist_from_ids(rec_expr: &RecExpr<TirLang>, ids: &[Id]) -> ParamList {
+    ids.iter()
+        .map(|&id| {
+            let node = &rec_expr[id];
+            match node {
+                TirLang::Var(sym) => (*sym, Type::unit()), // Type info is lost, use unit
+                _ => panic!("ParamList must contain Var nodes"),
+            }
+        })
+        .collect()
+}
+
+/// Reconstruct a MethodRef from two Var node indices.
+fn methodref_from_ids(
+    rec_expr: &RecExpr<TirLang>,
+    interface_idx: Id,
+    method_name_idx: Id,
+) -> MethodRef {
+    let interface_node = &rec_expr[interface_idx];
+    let interface = match interface_node {
+        TirLang::Var(sym) => *sym,
+        _ => panic!("MethodRef first child must be Var"),
+    };
+    let method_node = &rec_expr[method_name_idx];
+    let method = match method_node {
+        TirLang::Var(sym) => *sym,
+        _ => panic!("MethodRef second child must be Var"),
+    };
+    MethodRef { interface, method }
 }
 
 pub fn main(tcx: Tcx, tir: Program) -> (Tcx, Program) {
     let mut egraph = EGraph::<TirLang, ()>::default();
-    let mut main_id = None;
-    let same_add: Pattern<TirLang> = "(+ ?a 0)".parse().unwrap();
-    println!("\n{:?}\n", same_add);
+
+    let mut function_data: Vec<(Function, Id)> = Vec::new();
+
+    let mut type_span_map = TypeSpanMap::new(Span::DUMMY);
 
     for func in tir.functions() {
-        let res = expr_to_egg(&func.body, &mut egraph);
-        if func.name == Symbol::main() {
-            main_id = Some(res);
-        }
-        // egraph.rebuild();
+        let body_id = expr_to_egg(&func.body, &mut egraph, &mut type_span_map);
+        function_data.push((func.clone(), body_id));
     }
-
-    if matches!(main_id, None) {
-        panic!("No main function found in e-graph");
-    }
-
-    println!("{:?}", egraph);
+    println!("got ehre");
 
     let runner = Runner::default().with_egraph(egraph).run(&make_rules());
-
     let extractor = Extractor::new(&runner.egraph, AstSize);
 
-    let (best_cost, best) = extractor.find_best(main_id.unwrap());
-    println!("Simplified to {} with cost {}", best, best_cost);
-    best.to_string();
-    // simplify the expression using a Runner, which creates an e-graph with
-    // the given expression and runs the given rules over it
-    // let runner = Runner::default().with_expr(&expr).run(&make_rules());
+    // Convert optimized expressions back to Expr and reconstruct functions
+    let optimized_functions: Vec<Function> = function_data
+        .into_iter()
+        .map(|(mut func, body_id)| {
+            let (_cost, optimized_rec_expr) = extractor.find_best(body_id);
 
-    // // the Runner knows which e-class the expression given with `with_expr` is in
-    // let root = runner.roots[0];
+            // let root_idx = Id::from(optimized_rec_expr.as_ref().len() - 1);
+            func.body = rec_expr_to_expr(&optimized_rec_expr, body_id, &type_span_map);
+            func
+        })
+        .collect();
 
-    // // use an Extractor to pick the best element of the root eclass
-    // let extractor = Extractor::new(&runner.egraph, AstSize);
-    // let (best_cost, best) = extractor.find_best(root);
-    // println!("Simplified {} to {} with cost {}", expr, best, best_cost);
-    // best.to_string();
-
-    (tcx, tir)
+    (tcx, Program::new(optimized_functions))
 }

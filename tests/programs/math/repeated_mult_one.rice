@@ -1,0 +1,9 @@
+fn main() {
+  let x = 0 in
+  let y = 1000000 in
+  let z = 1 in
+  while x < y {
+    x := x + 1;
+    z := z * 1
+  }
+}
