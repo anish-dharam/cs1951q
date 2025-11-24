@@ -5,6 +5,8 @@ use crate::{
     utils::Symbol,
 };
 
+use egg::{Extractor, Language, Rewrite, Runner, define_language, rewrite};
+
 pub use crate::ast::types::{Binop, Const, ParamList, Type, TypeKind};
 
 #[derive(Debug, Clone)]
@@ -22,7 +24,7 @@ impl Function {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct MethodRef {
     pub interface: Symbol,
     pub method: Symbol,
@@ -34,7 +36,7 @@ pub struct ImplRef {
     pub struct_: Symbol,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum ExprKind {
     Var(Symbol),
     Const(Const),
@@ -106,7 +108,7 @@ pub enum ExprKind {
     },
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Expr {
     pub kind: ExprKind,
     pub ty: Type,

@@ -1,6 +1,6 @@
 //! Definitions of AST types.
 
-use std::{fmt, sync::LazyLock};
+use std::{fmt, str::FromStr, sync::LazyLock};
 
 use internment::Intern;
 use ordered_float::OrderedFloat;
@@ -28,6 +28,46 @@ interned!(Type, TypeKind);
 impl Type {
     pub fn new(kind: TypeKind) -> Self {
         Type(Intern::new(kind))
+    }
+}
+
+impl FromStr for Type {
+    type Err = ();
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "int" => Ok(Type::int()),
+            "float" => Ok(Type::float()),
+            "bool" => Ok(Type::bool()),
+            "string" => Ok(Type::string()),
+            "Self" => Ok(Type::self_()),
+            "_" => {
+                println!("Hole parsed from egg rewriting?");
+                Err(())
+            }
+            _ if s.starts_with("(") => {
+                assert!(s.ends_with(")"));
+                let tys = s[1..s.len() - 1]
+                    .split(",")
+                    .map(|ty| ty.parse().unwrap())
+                    .collect();
+                Ok(Type::tuple(tys))
+            }
+            _ if s.starts_with("[") => {
+                assert!(s.ends_with("]"));
+                let ty = s[1..s.len() - 1].parse().unwrap();
+                Ok(Type::array(ty))
+            }
+            _ if s.starts_with("fn") => {
+                let (inputs, output) = s[3..s.len() - 1].split_once("->").unwrap();
+                let inputs = inputs.split(",").map(|ty| ty.parse().unwrap()).collect();
+                let output = output.parse().unwrap();
+                Ok(Type::func(inputs, output))
+            }
+            _ => Err(()), // name:Ident => Ok(Type::struct_(name)),
+                          // "@" <name:Ident> => Ok(Type::interface(name)),
+                          // "fn" <sig:FnSig> => Ok(sig),
+        }
     }
 }
 
@@ -149,7 +189,7 @@ impl TypeKind {
     }
 }
 
-#[derive(Debug, Clone, Copy, Serialize)]
+#[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Span {
     pub start: u32,
     pub end: u32,
@@ -262,6 +302,23 @@ impl Const {
     }
 }
 
+impl FromStr for Const {
+    type Err = ();
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "true" => Ok(Const::Bool(true)),
+            "false" => Ok(Const::Bool(false)),
+            n if n.parse::<i32>().is_ok() => Ok(Const::Int(n.parse().unwrap())),
+            f if f.parse::<f32>().is_ok() => Ok(Const::Float(OrderedFloat(f.parse().unwrap()))),
+            s if s.starts_with('"') && s.ends_with('"') => {
+                Ok(Const::String(s[1..s.len() - 1].to_string()))
+            }
+            _ => Err(()),
+        }
+    }
+}
+
 pub type Expr = Spanned<ExprKind>;
 
 #[derive(Debug, Clone)]
@@ -355,6 +412,34 @@ pub enum Binop {
     BitAnd,
     BitOr,
     Concat,
+}
+
+impl FromStr for Binop {
+    type Err = ();
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "+" => Ok(Binop::Add),
+            "-" => Ok(Binop::Sub),
+            "*" => Ok(Binop::Mul),
+            "/" => Ok(Binop::Div),
+            "%" => Ok(Binop::Rem),
+            "**" => Ok(Binop::Exp),
+            "==" => Ok(Binop::Eq),
+            "!=" => Ok(Binop::Neq),
+            "<" => Ok(Binop::Lt),
+            ">" => Ok(Binop::Gt),
+            "<=" => Ok(Binop::Le),
+            ">=" => Ok(Binop::Ge),
+            "&&" => Ok(Binop::And),
+            "||" => Ok(Binop::Or),
+            "<<" => Ok(Binop::Shl),
+            ">>" => Ok(Binop::Shr),
+            "|" => Ok(Binop::BitOr),
+            "^" => Ok(Binop::Concat),
+            _ => Err(()),
+        }
+    }
 }
 
 #[derive(Debug)]

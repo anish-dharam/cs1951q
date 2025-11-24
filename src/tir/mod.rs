@@ -7,11 +7,12 @@ use self::types::Program;
 use crate::ast;
 use miette::Result;
 
-use egg;
+use egg::{Extractor, Language, Rewrite, Runner, define_language, rewrite};
 
 mod closure;
 mod desugar;
 mod print;
+mod rewrite;
 mod typeck;
 pub mod types;
 mod visit;
@@ -29,5 +30,5 @@ pub fn typecheck(prog: ast::Ast) -> Result<(Tcx, Program)> {
 }
 
 pub fn rewrite_terms(tcx: Tcx, tir: Program) -> (Tcx, Program) {
-    (tcx, tir)
+    rewrite::main(tcx, tir)
 }
