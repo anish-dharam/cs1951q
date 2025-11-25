@@ -779,11 +779,13 @@ pub struct TirCost;
 
 impl CostFunction<TirLang> for TirCost {
     type Cost = usize;
-
+    // cost = AST_size + op_complexity
+    // cost(node) = operation_cost(node) + 1 + Σ cost(children)
     fn cost<C>(&mut self, enode: &TirLang, mut child: C) -> usize
-    where C: FnMut(Id) -> usize
+    where
+        C: FnMut(Id) -> usize,
     {
-        let base = match enode {
+        let op_cost = match enode {
             TirLang::Int(_) | TirLang::Bool(_) | TirLang::Float(_) |
             TirLang::String(_) => 1,
             TirLang::Var(_) => 2,
@@ -800,10 +802,14 @@ impl CostFunction<TirLang> for TirCost {
             TirLang::Assign(_) | TirLang::Loop(_) |
             TirLang::While(_) | TirLang::If(_) => 50,
 
-            _ => 100, 
+            _ => 100,
         };
 
-        enode.fold(base, |acc, id| acc + child(id))
+        let mut total = op_cost + 1;
+        enode.for_each(|id| {
+            total += child(id);
+        });
+        total
     }
 }
 
