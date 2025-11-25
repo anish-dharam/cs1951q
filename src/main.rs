@@ -20,7 +20,16 @@ enum Command {
     /// Execute the source file.
     Exec,
     // E-graph optimizations
-    Rewrite,
+    Rewrite {
+        #[arg(long, default_value_t = 30)]
+        iterations: usize,
+
+        #[arg(long, default_value_t = 1)]
+        time_limit: u64,
+
+        #[arg(long, default_value = "ast")]
+        model: String,
+    },
     /// Run symbolic execution on functions annotated with #[symex].
     Symex {
         /// Maximum number of steps to execute per path. Paths exceeding this limit are discarded.
@@ -69,8 +78,11 @@ fn run(args: &Args, input: &Input) -> Result<()> {
     log::debug!("TIR:\n{original_tir}");
 
     let (tcx, tir) = match &args.command {
-        Some(Command::Rewrite) => {
+        Some(Command::Rewrite { iterations, time_limit, model }) => {
             println!("E-graph optimization");
+            rice::tir::REWRITE_ITER_LIMIT.with(|v| *v.borrow_mut() = *iterations);
+            rice::tir::REWRITE_TIME_LIMIT.with(|v| *v.borrow_mut() = *time_limit);
+            rice::tir::REWRITE_COST_MODEL.with(|v| *v.borrow_mut() = model.clone());
             let (new_tcx, new_tir) = rice::rewrite_terms(original_tcx, original_tir);
             log::debug!("TIR with e-graph rewrites:\n{new_tir}");
             (new_tcx, new_tir)
@@ -99,7 +111,7 @@ fn run(args: &Args, input: &Input) -> Result<()> {
     }
 
     match &args.command {
-        None | Some(Command::Exec) | Some(Command::Rewrite) => exec(args, tcx, bc),
+        None | Some(Command::Exec) | Some(Command::Rewrite { .. }) => exec(args, tcx, bc),
         Some(Command::Symex { max_steps }) => symex(tcx, bc, *max_steps),
     }
 }

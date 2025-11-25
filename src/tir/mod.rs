@@ -14,10 +14,12 @@ mod desugar;
 mod print;
 mod rewrite;
 mod typeck;
+pub use rewrite::{REWRITE_ITER_LIMIT, REWRITE_TIME_LIMIT, REWRITE_COST_MODEL};
 pub mod types;
 mod visit;
 
 pub use typeck::{Globals, Tcx};
+
 
 /// Type-checks a syntax tree into a [type context][Tcx] and a [typed program][Program].
 pub fn typecheck(prog: ast::Ast) -> Result<(Tcx, Program)> {

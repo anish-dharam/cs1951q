@@ -8,9 +8,16 @@ use crate::ast::types::{Binop, Const, ParamList, Span, Type};
 use crate::utils::Symbol;
 use ordered_float::OrderedFloat;
 use std::collections::HashMap;
+use std::cell::RefCell;
+
+thread_local! {
+    pub static REWRITE_ITER_LIMIT: RefCell<usize> = RefCell::new(30);
+    pub static REWRITE_TIME_LIMIT: RefCell<u64> = RefCell::new(1);
+    pub static REWRITE_COST_MODEL: RefCell<String> = RefCell::new("ast".to_string());
+}
 
 use egg::{
-    AstSize, EGraph, Extractor, Id, Pattern, RecExpr, Rewrite, Runner, define_language, rewrite,
+    AstSize, EGraph, Extractor, Id, Pattern, RecExpr, Rewrite, Runner, define_language, rewrite, Language, StopReason,
 };
 
 pub use super::typeck::Tcx;
@@ -124,6 +131,13 @@ fn make_rules() -> Vec<Rewrite<TirLang, ()>> {
         rewrite!("gte-self"; "(>= ?x ?x)" => "true"),
         rewrite!("add-assoc"; "(+ (+ ?a ?b) ?c)" => "(+ ?a (+ ?b ?c))"),
         rewrite!("mul-assoc"; "(* (* ?a ?b) ?c)" => "(* ?a (* ?b ?c))"),
+
+        // // NEW STUFFS here
+        // rewrite!("let-id"; "(let ?x ?ty ?v ?x)" => "?v"),
+        // rewrite!("add-int"; "(+ (Int ?a) (Int ?b))" => { TirLang::Int(a + b) }),
+        // rewrite!("if-true"; "(if true ?t ?e)" => "?t"),
+        // rewrite!("if-false"; "(if false ?t ?e)" => "?e"),
+        // rewrite!("while-false"; "(while false ?body)" => "unit"),
     ]
 }
 
@@ -761,6 +775,126 @@ fn methodref_from_ids(
     MethodRef { interface, method }
 }
 
+pub struct TirCost;
+
+impl CostFunction<TirLang> for TirCost {
+    type Cost = usize;
+
+    fn cost<C>(&mut self, enode: &TirLang, mut child: C) -> usize
+    where C: FnMut(Id) -> usize
+    {
+        let base = match enode {
+            TirLang::Int(_) | TirLang::Bool(_) | TirLang::Float(_) |
+            TirLang::String(_) => 1,
+            TirLang::Var(_) => 2,
+            TirLang::Tuple(_) | TirLang::Struct(_) => 3,
+
+            TirLang::Add(_) | TirLang::Sub(_) | TirLang::Mul(_) |
+            TirLang::Div(_) | TirLang::Eq(_) | TirLang::Neq(_) |
+            TirLang::Lt(_) | TirLang::Le(_) | TirLang::Gt(_) |
+            TirLang::Ge(_) => 5,
+
+            TirLang::Let(_) => 10,
+            TirLang::Call(_) | TirLang::MethodCall(_) | TirLang::Cast(_) => 20,
+
+            TirLang::Assign(_) | TirLang::Loop(_) |
+            TirLang::While(_) | TirLang::If(_) => 50,
+
+            _ => 100, 
+        };
+
+        enode.fold(base, |acc, id| acc + child(id))
+    }
+}
+
+
+use egg::{CostFunction};
+
+pub struct TirSmartCost;
+fn depth_penalty<C: FnMut(Id) -> usize>(enode: &TirLang, mut child: C) -> usize {
+    let mut max_depth = 0;
+    enode.for_each(|id| {
+        let d = child(id);
+        if d > max_depth {
+            max_depth = d;
+        }
+    });
+    1 + max_depth
+}
+
+impl CostFunction<TirLang> for TirSmartCost {
+    type Cost = usize;
+
+    fn cost<C>(&mut self, enode: &TirLang, mut child: C) -> usize
+    where C: FnMut(Id) -> usize
+    {
+        let base = match enode {
+            TirLang::Int(_) | TirLang::Bool(_) | TirLang::Float(_) |
+            TirLang::String(_) => 1,
+
+            TirLang::Var(_) => 2,
+
+            TirLang::Tuple(_) | TirLang::Struct(_) => 3,
+            TirLang::Add(_) | TirLang::Sub(_) | TirLang::Mul(_) |
+            TirLang::Div(_) | TirLang::Eq(_) | TirLang::Neq(_) |
+            TirLang::Lt(_) | TirLang::Le(_) | TirLang::Gt(_) |
+            TirLang::Ge(_) => 5,
+
+            TirLang::Let(_) => 12,
+            TirLang::Call(_) | TirLang::MethodCall(_) | TirLang::Cast(_) => 20,
+
+            TirLang::Assign(_) | TirLang::Loop(_) |
+            TirLang::While(_) | TirLang::If(_) => 50,
+            _ => 100,
+        };
+
+        let mut ast_size = 1; 
+        enode.for_each(|id| {
+            ast_size += child(id);
+        });
+
+        let depth = depth_penalty(enode, &mut child);
+
+        let const_bias = match enode {
+            TirLang::Int(_) => 0, 
+            TirLang::Bool(_) => 0,
+            _ => 2,
+        };
+        let ac_penalty = match enode {
+            TirLang::Add([a, b]) => {
+                if a > b { 5 } else { 0 }
+            }
+            TirLang::Mul([a, b]) => {
+                if a > b { 5 } else { 0 }
+            }
+            _ => 0,
+        };
+
+        base + ast_size + depth + const_bias + ac_penalty
+    }
+}
+
+pub enum AnyCostFn {
+    Ast(AstSize),
+    Tir(TirCost),
+    Smart(TirSmartCost),
+}
+
+impl egg::CostFunction<TirLang> for AnyCostFn {
+    type Cost = usize;
+
+    fn cost<C>(&mut self, enode: &TirLang, mut child: C) -> Self::Cost
+    where
+        C: FnMut(Id) -> Self::Cost,
+    {
+        match self {
+            AnyCostFn::Ast(inner) => inner.cost(enode, &mut child),
+            AnyCostFn::Tir(inner) => inner.cost(enode, &mut child),
+            AnyCostFn::Smart(inner) => inner.cost(enode, &mut child),
+        }
+    }
+}
+
 pub fn main(tcx: Tcx, tir: Program) -> (Tcx, Program) {
     let mut egraph = EGraph::<TirLang, ()>::default();
 
@@ -773,8 +907,27 @@ pub fn main(tcx: Tcx, tir: Program) -> (Tcx, Program) {
         function_data.push((func.clone(), body_id));
     }
 
-    let runner = Runner::default().with_egraph(egraph).run(&make_rules());
-    let extractor = Extractor::new(&runner.egraph, AstSize);
+    // let runner = Runner::default().with_egraph(egraph).run(&make_rules());
+    let iter_limit = REWRITE_ITER_LIMIT.with(|v| *v.borrow());
+    let time_limit = REWRITE_TIME_LIMIT.with(|v| *v.borrow());
+
+    let runner = Runner::default()
+        .with_egraph(egraph)
+        .with_iter_limit(iter_limit)
+        .with_time_limit(std::time::Duration::from_secs(time_limit))
+        .run(&make_rules());
+
+    // let extractor = Extractor::new(&runner.egraph, AstSize);
+    // let extractor = Extractor::new(&runner.egraph, TirSmartCost);
+    let model = REWRITE_COST_MODEL.with(|v| v.borrow().clone());
+    let mut cost_fn = match model.as_str() {
+        "ast" => AnyCostFn::Ast(AstSize),
+        "tir" => AnyCostFn::Tir(TirCost),
+        "smart" => AnyCostFn::Smart(TirSmartCost),
+        _ => AnyCostFn::Smart(TirSmartCost),
+    };
+
+    let extractor = Extractor::new(&runner.egraph, cost_fn);
 
     // Convert optimized expressions back to Expr and reconstruct functions
     let optimized_functions: Vec<Function> = function_data
@@ -793,6 +946,13 @@ pub fn main(tcx: Tcx, tir: Program) -> (Tcx, Program) {
     //     "Rewrote \n {:?} \n into \n {:?}",
     //     tir,
     //     Program::new(optimized_functions.clone())
+    // );
+    // println!(
+    //     "[bench] nodes={} classes={} saturated={} time_limit_hit={}",
+    //     runner.egraph.total_size(),
+    //     runner.egraph.number_of_classes(),
+    //     runner.stop_reason == Some(StopReason::Saturated),
+    //     runner.stop_reason == Some(StopReason::TimeLimit),
     // );
 
     (tcx, Program::new(optimized_functions))
