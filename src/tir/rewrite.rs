@@ -9,7 +9,7 @@ use crate::utils::Symbol;
 use ordered_float::OrderedFloat;
 use std::collections::HashMap;
 use std::cell::RefCell;
-use crate::tir::benchmark::sweep;
+use crate::tir::benchmark::{sweep, sweep_with_rules};
 
 thread_local! {
     pub static REWRITE_ITER_LIMIT: RefCell<usize> = RefCell::new(30);
@@ -32,6 +32,48 @@ pub struct TypeSpanMap {
     /// Default span to use when not found
     pub default_span: Span,
 }
+
+#[derive(Clone, Copy)]
+pub struct AblationConfig {
+    pub commutation: bool,
+    pub identity: bool,
+    pub zero: bool,
+    pub self_compare: bool,
+    pub associativity: bool,
+}
+
+impl AblationConfig {
+    pub fn full() -> Self {
+        Self {
+            commutation: true,
+            identity: true,
+            zero: true,
+            self_compare: true,
+            associativity: true,
+        }
+    }
+
+    pub fn no_comm() -> Self {
+        Self { commutation: false, ..Self::full() }
+    }
+
+    pub fn no_identity() -> Self {
+        Self { identity: false, ..Self::full() }
+    }
+
+    pub fn no_zero() -> Self {
+        Self { zero: false, ..Self::full() }
+    }
+
+    pub fn no_self_compare() -> Self {
+        Self { self_compare: false, ..Self::full() }
+    }
+
+    pub fn no_assoc() -> Self {
+        Self { associativity: false, ..Self::full() }
+    }
+}
+
 
 impl TypeSpanMap {
     pub fn new(default_span: Span) -> Self {
@@ -115,32 +157,68 @@ define_language! {
     }
 }
 
-pub fn make_rules() -> Vec<Rewrite<TirLang, ()>> {
-    vec![
-        rewrite!("commute-add"; "(+ ?a ?b)" => "(+ ?b ?a)"),
-        rewrite!("commute-mul"; "(* ?a ?b)" => "(* ?b ?a)"),
-        // rewrite!("add-0"; "(+ ?a Const(0))" => "?a"),
-        rewrite!("add-0"; "(+ ?a 0)" => "?a"),
-        rewrite!("mul-0"; "(* ?a 0)" => "0"),
-        rewrite!("mul-1"; "(* ?a 1)" => "?a"),
-        rewrite!("sub-zero"; "(- ?x 0)" => "?x"),
-        rewrite!("div-one"; "(/ ?x 1)" => "?x"),
-        rewrite!("eq-self"; "(== ?x ?x)" => "true"),
-        rewrite!("lt-self"; "(< ?x ?x)" => "false"),
-        rewrite!("gt-self"; "(> ?x ?x)" => "false"),
-        rewrite!("lte-self"; "(<= ?x ?x)" => "true"),
-        rewrite!("gte-self"; "(>= ?x ?x)" => "true"),
-        rewrite!("add-assoc"; "(+ (+ ?a ?b) ?c)" => "(+ ?a (+ ?b ?c))"),
-        rewrite!("mul-assoc"; "(* (* ?a ?b) ?c)" => "(* ?a (* ?b ?c))"),
+// pub fn make_rules() -> Vec<Rewrite<TirLang, ()>> {
+//     vec![
+//         rewrite!("commute-add"; "(+ ?a ?b)" => "(+ ?b ?a)"),
+//         rewrite!("commute-mul"; "(* ?a ?b)" => "(* ?b ?a)"),
+//         // rewrite!("add-0"; "(+ ?a Const(0))" => "?a"),
+//         rewrite!("add-0"; "(+ ?a 0)" => "?a"),
+//         rewrite!("mul-0"; "(* ?a 0)" => "0"),
+//         rewrite!("mul-1"; "(* ?a 1)" => "?a"),
+//         rewrite!("sub-zero"; "(- ?x 0)" => "?x"),
+//         rewrite!("div-one"; "(/ ?x 1)" => "?x"),
+//         rewrite!("eq-self"; "(== ?x ?x)" => "true"),
+//         rewrite!("lt-self"; "(< ?x ?x)" => "false"),
+//         rewrite!("gt-self"; "(> ?x ?x)" => "false"),
+//         rewrite!("lte-self"; "(<= ?x ?x)" => "true"),
+//         rewrite!("gte-self"; "(>= ?x ?x)" => "true"),
+//         rewrite!("add-assoc"; "(+ (+ ?a ?b) ?c)" => "(+ ?a (+ ?b ?c))"),
+//         rewrite!("mul-assoc"; "(* (* ?a ?b) ?c)" => "(* ?a (* ?b ?c))"),
 
-        // // NEW STUFFS here
-        // rewrite!("let-id"; "(let ?x ?ty ?v ?x)" => "?v"),
-        // rewrite!("add-int"; "(+ (Int ?a) (Int ?b))" => { TirLang::Int(a + b) }),
-        // rewrite!("if-true"; "(if true ?t ?e)" => "?t"),
-        // rewrite!("if-false"; "(if false ?t ?e)" => "?e"),
-        // rewrite!("while-false"; "(while false ?body)" => "unit"),
-    ]
+//         // // NEW STUFFS here
+//         // rewrite!("let-id"; "(let ?x ?ty ?v ?x)" => "?v"),
+//         // rewrite!("add-int"; "(+ (Int ?a) (Int ?b))" => { TirLang::Int(a + b) }),
+//         // rewrite!("if-true"; "(if true ?t ?e)" => "?t"),
+//         // rewrite!("if-false"; "(if false ?t ?e)" => "?e"),
+//         // rewrite!("while-false"; "(while false ?body)" => "unit"),
+//     ]
+// }
+
+
+pub fn make_rules(cfg: AblationConfig) -> Vec<Rewrite<TirLang, ()>> {
+    let mut rules = vec![];
+    if cfg.commutation {
+        rules.push(rewrite!("commute-add"; "(+ ?a ?b)" => "(+ ?b ?a)"));
+        rules.push(rewrite!("commute-mul"; "(* ?a ?b)" => "(* ?b ?a)"));
+    }
+
+    if cfg.identity {
+        rules.push(rewrite!("add-0"; "(+ ?a 0)" => "?a"));
+        rules.push(rewrite!("mul-1"; "(* ?a 1)" => "?a"));
+        rules.push(rewrite!("sub-zero"; "(- ?x 0)" => "?x"));
+        rules.push(rewrite!("div-one"; "(/ ?x 1)" => "?x"));
+    }
+
+    if cfg.zero {
+        rules.push(rewrite!("mul-0"; "(* ?a 0)" => "0"));
+    }
+
+    if cfg.self_compare {
+        rules.push(rewrite!("eq-self"; "(== ?x ?x)" => "true"));
+        rules.push(rewrite!("lt-self"; "(< ?x ?x)" => "false"));
+        rules.push(rewrite!("gt-self"; "(> ?x ?x)" => "false"));
+        rules.push(rewrite!("lte-self"; "(<= ?x ?x)" => "true"));
+        rules.push(rewrite!("gte-self"; "(>= ?x ?x)" => "true"));
+    }
+
+    if cfg.associativity {
+        rules.push(rewrite!("add-assoc"; "(+ (+ ?a ?b) ?c)" => "(+ ?a (+ ?b ?c))"));
+        rules.push(rewrite!("mul-assoc"; "(* (* ?a ?b) ?c)" => "(* ?a (* ?b ?c))"));
+    }
+
+    rules
 }
+
 
 fn symbol_id(egraph: &mut EGraph<TirLang, ()>, sym: Symbol) -> Id {
     egraph.add(TirLang::Var(sym))
@@ -909,24 +987,52 @@ pub fn main(tcx: Tcx, tir: Program) -> (Tcx, Program) {
     for func in tir.functions() {
         let body_id = expr_to_egg(&func.body, &mut egraph, &mut type_span_map);
 
+        // if std::env::var("RUN_BENCH").is_ok() {
+        //     let mut recexpr = RecExpr::<TirLang>::default();
+        //     let root = expr_to_recexpr(&func.body, &mut recexpr);
+
+        //     let limits = vec![5, 10, 20, 40, 80];
+        //     let csv_name = format!("bench_{}.csv", func.name);
+        //     let extractor = Extractor::new(&egraph, AstSize);
+        //     let (_c, recexpr) = extractor.find_best(body_id);
+
+        //     sweep(recexpr.clone(), &limits, "smart", &csv_name);
+
+        //     println!("[bench] wrote {}", csv_name);
+        // }
         if std::env::var("RUN_BENCH").is_ok() {
-            let mut recexpr = RecExpr::<TirLang>::default();
-            let root = expr_to_recexpr(&func.body, &mut recexpr);
+            let configs = vec![
+                ("full", AblationConfig::full()),
+                ("no_comm", AblationConfig::no_comm()),
+                ("no_identity", AblationConfig::no_identity()),
+                ("no_zero", AblationConfig::no_zero()),
+                ("no_self_compare", AblationConfig::no_self_compare()),
+                ("no_assoc", AblationConfig::no_assoc()),
+            ];
+            let mut eg = EGraph::<TirLang, ()>::default();
+            let mut map = TypeSpanMap::new(Span::DUMMY);
+            let root = expr_to_egg(&func.body, &mut eg, &mut map);
+            let full_rules = make_rules(AblationConfig::full());
+            let runner = Runner::default()
+                .with_egraph(eg)
+                .with_iter_limit(30)
+                .run(&full_rules);
+            let extractor = egg::Extractor::new(&runner.egraph, AstSize);
+            let (_c, recexpr) = extractor.find_best(root);
+            let limits = vec![5,10,20,40,80];
 
-            let limits = vec![5, 10, 20, 40, 80];
-            let csv_name = format!("bench_{}.csv", func.name);
-            let extractor = Extractor::new(&egraph, AstSize);
-            let (_c, recexpr) = extractor.find_best(body_id);
-
-            sweep(recexpr.clone(), &limits, "smart", &csv_name);
-
-            println!("[bench] wrote {}", csv_name);
+            for (name, cfg) in configs {
+                let rules = make_rules(cfg);
+                let csv_path = format!("output_{}.csv", name);
+                sweep_with_rules(recexpr.clone(), &limits, "smart", rules, &csv_path);
+            }
+            println!("full: means full rule set; no_comm: no commutativity rules (like a + b → b + a); no_identity: no identity rules (like x + 0 → x); no_zero: no zero rules (x * 0 → 0); no_self_compare: no self-comparison rules ; no_assoc: no associativity rules (like (a + b) + c → a + (b + c));");
         }
+
 
         function_data.push((func.clone(), body_id));
     }
 
-    // let runner = Runner::default().with_egraph(egraph).run(&make_rules());
     let iter_limit = REWRITE_ITER_LIMIT.with(|v| *v.borrow());
     let time_limit = REWRITE_TIME_LIMIT.with(|v| *v.borrow());
 
@@ -934,7 +1040,8 @@ pub fn main(tcx: Tcx, tir: Program) -> (Tcx, Program) {
         .with_egraph(egraph)
         .with_iter_limit(iter_limit)
         .with_time_limit(std::time::Duration::from_secs(time_limit))
-        .run(&make_rules());
+        .run(&make_rules(AblationConfig::full()));
+        // .run(&make_rules());
 
     // let extractor = Extractor::new(&runner.egraph, AstSize);
     // let extractor = Extractor::new(&runner.egraph, TirSmartCost);

@@ -33,6 +33,5 @@ pub fn typecheck(prog: ast::Ast) -> Result<(Tcx, Program)> {
 }
 
 pub fn rewrite_terms(tcx: Tcx, tir: Program) -> (Tcx, Program) {
-    eprintln!("[rewrite] starting rewrite mod pass");
     rewrite::main(tcx, tir)
 }
