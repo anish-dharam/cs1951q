@@ -83,6 +83,10 @@ fn run(args: &Args, input: &Input) -> Result<()> {
             rice::tir::REWRITE_ITER_LIMIT.with(|v| *v.borrow_mut() = *iterations);
             rice::tir::REWRITE_TIME_LIMIT.with(|v| *v.borrow_mut() = *time_limit);
             rice::tir::REWRITE_COST_MODEL.with(|v| *v.borrow_mut() = model.clone());
+            if std::env::var("RUN_BENCH").is_ok() {
+                println!("[bench] Benchmark mode enabled.");
+            }
+
             let (new_tcx, new_tir) = rice::rewrite_terms(original_tcx, original_tir);
             log::debug!("TIR with e-graph rewrites:\n{new_tir}");
             (new_tcx, new_tir)

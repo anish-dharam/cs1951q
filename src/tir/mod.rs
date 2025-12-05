@@ -7,7 +7,7 @@ use self::types::Program;
 use crate::ast;
 use miette::Result;
 
-use egg::{Extractor, Language, Rewrite, Runner, define_language, rewrite};
+use egg::{Extractor, Language, Rewrite, Runner, define_language};
 
 mod closure;
 mod desugar;
@@ -16,6 +16,7 @@ mod rewrite;
 mod typeck;
 pub use rewrite::{REWRITE_ITER_LIMIT, REWRITE_TIME_LIMIT, REWRITE_COST_MODEL};
 pub mod types;
+pub mod benchmark;
 mod visit;
 
 pub use typeck::{Globals, Tcx};
@@ -32,5 +33,6 @@ pub fn typecheck(prog: ast::Ast) -> Result<(Tcx, Program)> {
 }
 
 pub fn rewrite_terms(tcx: Tcx, tir: Program) -> (Tcx, Program) {
+    eprintln!("[rewrite] starting rewrite mod pass");
     rewrite::main(tcx, tir)
 }

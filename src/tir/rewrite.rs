@@ -9,6 +9,7 @@ use crate::utils::Symbol;
 use ordered_float::OrderedFloat;
 use std::collections::HashMap;
 use std::cell::RefCell;
+use crate::tir::benchmark::sweep;
 
 thread_local! {
     pub static REWRITE_ITER_LIMIT: RefCell<usize> = RefCell::new(30);
@@ -53,7 +54,7 @@ impl TypeSpanMap {
 }
 
 define_language! {
-    enum TirLang {
+    pub enum TirLang {
 
         Bool(bool),
         Int(i32),
@@ -114,7 +115,7 @@ define_language! {
     }
 }
 
-fn make_rules() -> Vec<Rewrite<TirLang, ()>> {
+pub fn make_rules() -> Vec<Rewrite<TirLang, ()>> {
     vec![
         rewrite!("commute-add"; "(+ ?a ?b)" => "(+ ?b ?a)"),
         rewrite!("commute-mul"; "(* ?a ?b)" => "(* ?b ?a)"),
@@ -901,6 +902,40 @@ impl egg::CostFunction<TirLang> for AnyCostFn {
     }
 }
 
+fn expr_to_recexpr(expr: &Expr, out: &mut RecExpr<TirLang>) -> Id {
+    match &expr.kind {
+        ExprKind::Const(Const::Int(i)) => out.add(TirLang::Int(*i)),
+        ExprKind::Const(Const::Bool(b)) => out.add(TirLang::Bool(*b)),
+        ExprKind::Const(Const::Float(f)) => out.add(TirLang::Float(*f)),
+        ExprKind::Const(Const::String(s)) => out.add(TirLang::String(s.clone())),
+
+        ExprKind::Var(sym) => out.add(TirLang::Var(*sym)),
+
+        ExprKind::BinOp { left, right, op } => {
+            let l = expr_to_recexpr(left, out);
+            let r = expr_to_recexpr(right, out);
+
+            match op {
+                Binop::Add => out.add(TirLang::Add([l, r])),
+                Binop::Sub => out.add(TirLang::Sub([l, r])),
+                Binop::Mul => out.add(TirLang::Mul([l, r])),
+                Binop::Div => out.add(TirLang::Div([l, r])),
+                Binop::Eq  => out.add(TirLang::Eq([l, r])),
+                _ => out.add(TirLang::Tuple(vec![l, r])), 
+            }
+        }
+
+        ExprKind::Tuple(exprs) => {
+            let ids = exprs.iter().map(|e| expr_to_recexpr(e, out)).collect();
+            out.add(TirLang::Tuple(ids))
+        }
+
+        _ => {
+            out.add(TirLang::String(format!("unimplemented:{:?}", expr.kind)))
+        }
+    }
+}
+
 pub fn main(tcx: Tcx, tir: Program) -> (Tcx, Program) {
     let mut egraph = EGraph::<TirLang, ()>::default();
 
@@ -910,6 +945,21 @@ pub fn main(tcx: Tcx, tir: Program) -> (Tcx, Program) {
 
     for func in tir.functions() {
         let body_id = expr_to_egg(&func.body, &mut egraph, &mut type_span_map);
+
+        if std::env::var("RUN_BENCH").is_ok() {
+            let mut recexpr = RecExpr::<TirLang>::default();
+            let root = expr_to_recexpr(&func.body, &mut recexpr);
+
+            let limits = vec![5, 10, 20, 40, 80];
+            let csv_name = format!("bench_{}.csv", func.name);
+            let extractor = Extractor::new(&egraph, AstSize);
+            let (_c, recexpr) = extractor.find_best(body_id);
+
+            sweep(recexpr.clone(), &limits, "smart", &csv_name);
+
+            println!("[bench] wrote {}", csv_name);
+        }
+
         function_data.push((func.clone(), body_id));
     }
 
