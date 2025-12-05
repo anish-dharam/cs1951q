@@ -818,66 +818,29 @@ impl CostFunction<TirLang> for TirCost {
 use egg::{CostFunction};
 
 pub struct TirSmartCost;
-fn depth_penalty<C: FnMut(Id) -> usize>(enode: &TirLang, mut child: C) -> usize {
-    let mut max_depth = 0;
-    enode.for_each(|id| {
-        let d = child(id);
-        if d > max_depth {
-            max_depth = d;
-        }
-    });
-    1 + max_depth
-}
 
 impl CostFunction<TirLang> for TirSmartCost {
     type Cost = usize;
-
     fn cost<C>(&mut self, enode: &TirLang, mut child: C) -> usize
-    where C: FnMut(Id) -> usize
+    where
+        C: FnMut(Id) -> usize,
     {
-        let base = match enode {
-            TirLang::Int(_) | TirLang::Bool(_) | TirLang::Float(_) |
-            TirLang::String(_) => 1,
-
-            TirLang::Var(_) => 2,
-
-            TirLang::Tuple(_) | TirLang::Struct(_) => 3,
-            TirLang::Add(_) | TirLang::Sub(_) | TirLang::Mul(_) |
-            TirLang::Div(_) | TirLang::Eq(_) | TirLang::Neq(_) |
-            TirLang::Lt(_) | TirLang::Le(_) | TirLang::Gt(_) |
-            TirLang::Ge(_) => 5,
-
-            TirLang::Let(_) => 12,
-            TirLang::Call(_) | TirLang::MethodCall(_) | TirLang::Cast(_) => 20,
-
-            TirLang::Assign(_) | TirLang::Loop(_) |
-            TirLang::While(_) | TirLang::If(_) => 50,
-            _ => 100,
-        };
-
-        let mut ast_size = 1; 
-        enode.for_each(|id| {
-            ast_size += child(id);
-        });
-
-        let depth = depth_penalty(enode, &mut child);
-
-        let const_bias = match enode {
-            TirLang::Int(_) => 0, 
-            TirLang::Bool(_) => 0,
-            _ => 2,
-        };
-        let ac_penalty = match enode {
-            TirLang::Add([a, b]) => {
-                if a > b { 5 } else { 0 }
+        let mut total = 1;
+        enode.for_each(|id| total += child(id));
+        match enode {
+            TirLang::Call(_) |
+            TirLang::MethodCall(_) => {
+                total += 5; 
             }
-            TirLang::Mul([a, b]) => {
-                if a > b { 5 } else { 0 }
-            }
-            _ => 0,
-        };
 
-        base + ast_size + depth + const_bias + ac_penalty
+            TirLang::ArrayLiteral(_) |
+            TirLang::Struct(_) |
+            TirLang::Tuple(_) => {
+                total += 3; 
+            }
+            _ => {}
+        }
+        total
     }
 }
 
