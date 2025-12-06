@@ -5,11 +5,11 @@
 
 use super::types::{Expr, ExprKind, Function, MethodRef, Program};
 use crate::ast::types::{Binop, Const, ParamList, Span, Type};
+use crate::tir::benchmark::{sweep, sweep_with_rules};
 use crate::utils::Symbol;
 use ordered_float::OrderedFloat;
-use std::collections::HashMap;
 use std::cell::RefCell;
-use crate::tir::benchmark::{sweep, sweep_with_rules};
+use std::collections::HashMap;
 
 thread_local! {
     pub static REWRITE_ITER_LIMIT: RefCell<usize> = RefCell::new(30);
@@ -18,7 +18,8 @@ thread_local! {
 }
 
 use egg::{
-    AstSize, EGraph, Extractor, Id, Pattern, RecExpr, Rewrite, Runner, define_language, rewrite, Language, StopReason,
+    AstSize, EGraph, Extractor, Id, Language, Pattern, RecExpr, Rewrite, Runner, StopReason,
+    define_language, rewrite,
 };
 
 pub use super::typeck::Tcx;
@@ -54,26 +55,40 @@ impl AblationConfig {
     }
 
     pub fn no_comm() -> Self {
-        Self { commutation: false, ..Self::full() }
+        Self {
+            commutation: false,
+            ..Self::full()
+        }
     }
 
     pub fn no_identity() -> Self {
-        Self { identity: false, ..Self::full() }
+        Self {
+            identity: false,
+            ..Self::full()
+        }
     }
 
     pub fn no_zero() -> Self {
-        Self { zero: false, ..Self::full() }
+        Self {
+            zero: false,
+            ..Self::full()
+        }
     }
 
     pub fn no_self_compare() -> Self {
-        Self { self_compare: false, ..Self::full() }
+        Self {
+            self_compare: false,
+            ..Self::full()
+        }
     }
 
     pub fn no_assoc() -> Self {
-        Self { associativity: false, ..Self::full() }
+        Self {
+            associativity: false,
+            ..Self::full()
+        }
     }
 }
-
 
 impl TypeSpanMap {
     pub fn new(default_span: Span) -> Self {
@@ -125,10 +140,10 @@ define_language! {
         ">=" = Ge([Id; 2]),
         "&&" = And([Id; 2]),
         "||" = Or([Id; 2]),
-        "&" = BitAnd([Id; 2]),
         "<<" = Shl([Id; 2]),
         ">>" = Shr([Id; 2]),
         "|" = BitOr([Id; 2]),
+        "&" = BitAnd([Id; 2]),
         "^" = Concat([Id; 2]),
 
         Type(Type),
@@ -184,12 +199,33 @@ define_language! {
 //     ]
 // }
 
-
 pub fn make_rules(cfg: AblationConfig) -> Vec<Rewrite<TirLang, ()>> {
     let mut rules = vec![];
+    rules.push(rewrite!("shl-id"; "(* ?x 2)" => "(<< ?x 1)"));
+    rules.push(rewrite!("shr-id"; "(/ ?x 2)" => "(>> ?x 1)"));
+    rules.push(rewrite!("shl-id"; "(* ?x 4)" => "(<< ?x 2)"));
+    rules.push(rewrite!("shr-id"; "(/ ?x 4)" => "(>> ?x 2)"));
+    rules.push(rewrite!("shl-id"; "(* ?x 8)" => "(<< ?x 3)"));
+    rules.push(rewrite!("shr-id"; "(/ ?x 8)" => "(>> ?x 3)"));
+    rules.push(rewrite!("bitor-zero"; "(| ?x 0)" => "?x"));
+
+    rules.push(rewrite!("and-id"; "(&& ?x true)" => "?x"));
+    rules.push(rewrite!("and-id"; "(&& ?x false)" => "false"));
+    rules.push(rewrite!("or-id"; "(|| ?x true)" => "true"));
+    rules.push(rewrite!("or-id"; "(|| ?x false)" => "?x"));
+
+    rules.push(rewrite!("distribute-add"; "(* ?a (+ ?b ?c))" => "(+ (* ?a ?b) (* ?a ?c))"));
+    rules.push(rewrite!("distribute-sub"; "(* ?a (- ?b ?c))" => "(- (* ?a ?b) (* ?a ?c))"));
+    rules.push(rewrite!("distribute-shl"; "(* ?a (<< ?b ?c))" => "(<< (* ?a ?b) ?c)"));
+    rules.push(rewrite!("distribute-shr"; "(* ?a (>> ?b ?c))" => "(>> (* ?a ?b) ?c)"));
+    rules.push(rewrite!("distribute-bitor"; "(* ?a (| ?b ?c))" => "(| (* ?a ?b) (* ?a ?c))"));
+
     if cfg.commutation {
         rules.push(rewrite!("commute-add"; "(+ ?a ?b)" => "(+ ?b ?a)"));
         rules.push(rewrite!("commute-mul"; "(* ?a ?b)" => "(* ?b ?a)"));
+        rules.push(rewrite!("commute-bitor"; "(| ?a ?b)" => "(| ?b ?a)")); // not sure
+        rules.push(rewrite!("commute-and"; "(&& ?a ?b)" => "(&& ?b ?a)"));
+        rules.push(rewrite!("commute-or"; "(|| ?a ?b)" => "(|| ?b ?a)"));
     }
 
     if cfg.identity {
@@ -201,6 +237,7 @@ pub fn make_rules(cfg: AblationConfig) -> Vec<Rewrite<TirLang, ()>> {
 
     if cfg.zero {
         rules.push(rewrite!("mul-0"; "(* ?a 0)" => "0"));
+        rules.push(rewrite!("sub-id"; "(- ?x ?x)" => "0"));
     }
 
     if cfg.self_compare {
@@ -218,7 +255,6 @@ pub fn make_rules(cfg: AblationConfig) -> Vec<Rewrite<TirLang, ()>> {
 
     rules
 }
-
 
 fn symbol_id(egraph: &mut EGraph<TirLang, ()>, sym: Symbol) -> Id {
     egraph.add(TirLang::Var(sym))
@@ -865,21 +901,25 @@ impl CostFunction<TirLang> for TirCost {
         C: FnMut(Id) -> usize,
     {
         let op_cost = match enode {
-            TirLang::Int(_) | TirLang::Bool(_) | TirLang::Float(_) |
-            TirLang::String(_) => 1,
+            TirLang::Int(_) | TirLang::Bool(_) | TirLang::Float(_) | TirLang::String(_) => 1,
             TirLang::Var(_) => 2,
             TirLang::Tuple(_) | TirLang::Struct(_) => 3,
 
-            TirLang::Add(_) | TirLang::Sub(_) | TirLang::Mul(_) |
-            TirLang::Div(_) | TirLang::Eq(_) | TirLang::Neq(_) |
-            TirLang::Lt(_) | TirLang::Le(_) | TirLang::Gt(_) |
-            TirLang::Ge(_) => 5,
+            TirLang::Add(_)
+            | TirLang::Sub(_)
+            | TirLang::Mul(_)
+            | TirLang::Div(_)
+            | TirLang::Eq(_)
+            | TirLang::Neq(_)
+            | TirLang::Lt(_)
+            | TirLang::Le(_)
+            | TirLang::Gt(_)
+            | TirLang::Ge(_) => 5,
 
             TirLang::Let(_) => 10,
             TirLang::Call(_) | TirLang::MethodCall(_) | TirLang::Cast(_) => 20,
 
-            TirLang::Assign(_) | TirLang::Loop(_) |
-            TirLang::While(_) | TirLang::If(_) => 50,
+            TirLang::Assign(_) | TirLang::Loop(_) | TirLang::While(_) | TirLang::If(_) => 50,
 
             _ => 100,
         };
@@ -892,8 +932,7 @@ impl CostFunction<TirLang> for TirCost {
     }
 }
 
-
-use egg::{CostFunction};
+use egg::CostFunction;
 
 pub struct TirSmartCost;
 
@@ -906,15 +945,12 @@ impl CostFunction<TirLang> for TirSmartCost {
         let mut total = 1;
         enode.for_each(|id| total += child(id));
         match enode {
-            TirLang::Call(_) |
-            TirLang::MethodCall(_) => {
-                total += 5; 
+            TirLang::Call(_) | TirLang::MethodCall(_) => {
+                total += 5;
             }
 
-            TirLang::ArrayLiteral(_) |
-            TirLang::Struct(_) |
-            TirLang::Tuple(_) => {
-                total += 3; 
+            TirLang::ArrayLiteral(_) | TirLang::Struct(_) | TirLang::Tuple(_) => {
+                total += 3;
             }
             _ => {}
         }
@@ -961,8 +997,8 @@ fn expr_to_recexpr(expr: &Expr, out: &mut RecExpr<TirLang>) -> Id {
                 Binop::Sub => out.add(TirLang::Sub([l, r])),
                 Binop::Mul => out.add(TirLang::Mul([l, r])),
                 Binop::Div => out.add(TirLang::Div([l, r])),
-                Binop::Eq  => out.add(TirLang::Eq([l, r])),
-                _ => out.add(TirLang::Tuple(vec![l, r])), 
+                Binop::Eq => out.add(TirLang::Eq([l, r])),
+                _ => out.add(TirLang::Tuple(vec![l, r])),
             }
         }
 
@@ -971,9 +1007,7 @@ fn expr_to_recexpr(expr: &Expr, out: &mut RecExpr<TirLang>) -> Id {
             out.add(TirLang::Tuple(ids))
         }
 
-        _ => {
-            out.add(TirLang::String(format!("unimplemented:{:?}", expr.kind)))
-        }
+        _ => out.add(TirLang::String(format!("unimplemented:{:?}", expr.kind))),
     }
 }
 
@@ -1019,16 +1053,17 @@ pub fn main(tcx: Tcx, tir: Program) -> (Tcx, Program) {
                 .run(&full_rules);
             let extractor = egg::Extractor::new(&runner.egraph, AstSize);
             let (_c, recexpr) = extractor.find_best(root);
-            let limits = vec![5,10,20,40,80];
+            let limits = vec![5, 10, 20, 40, 80];
 
             for (name, cfg) in configs {
                 let rules = make_rules(cfg);
                 let csv_path = format!("output_{}.csv", name);
                 sweep_with_rules(recexpr.clone(), &limits, "smart", rules, &csv_path);
             }
-            println!("full: means full rule set; no_comm: no commutativity rules (like a + b → b + a); no_identity: no identity rules (like x + 0 → x); no_zero: no zero rules (x * 0 → 0); no_self_compare: no self-comparison rules ; no_assoc: no associativity rules (like (a + b) + c → a + (b + c));");
+            println!(
+                "full: means full rule set; no_comm: no commutativity rules (like a + b → b + a); no_identity: no identity rules (like x + 0 → x); no_zero: no zero rules (x * 0 → 0); no_self_compare: no self-comparison rules ; no_assoc: no associativity rules (like (a + b) + c → a + (b + c));"
+            );
         }
-
 
         function_data.push((func.clone(), body_id));
     }
@@ -1041,7 +1076,7 @@ pub fn main(tcx: Tcx, tir: Program) -> (Tcx, Program) {
         .with_iter_limit(iter_limit)
         .with_time_limit(std::time::Duration::from_secs(time_limit))
         .run(&make_rules(AblationConfig::full()));
-        // .run(&make_rules());
+    // .run(&make_rules());
 
     // let extractor = Extractor::new(&runner.egraph, AstSize);
     // let extractor = Extractor::new(&runner.egraph, TirSmartCost);
