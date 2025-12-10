@@ -201,24 +201,90 @@ define_language! {
 
 pub fn make_rules(cfg: AblationConfig) -> Vec<Rewrite<TirLang, ()>> {
     let mut rules = vec![];
+    //2 powers
     rules.push(rewrite!("shl-id"; "(* ?x 2)" => "(<< ?x 1)"));
     rules.push(rewrite!("shr-id"; "(/ ?x 2)" => "(>> ?x 1)"));
-    rules.push(rewrite!("shl-id"; "(* ?x 4)" => "(<< ?x 2)"));
-    rules.push(rewrite!("shr-id"; "(/ ?x 4)" => "(>> ?x 2)"));
-    rules.push(rewrite!("shl-id"; "(* ?x 8)" => "(<< ?x 3)"));
-    rules.push(rewrite!("shr-id"; "(/ ?x 8)" => "(>> ?x 3)"));
+    rules.push(rewrite!("shl-id4"; "(* ?x 4)" => "(<< ?x 2)"));
+    rules.push(rewrite!("shr-id4"; "(/ ?x 4)" => "(>> ?x 2)"));
+    rules.push(rewrite!("shl-id8"; "(* ?x 8)" => "(<< ?x 3)"));
+    rules.push(rewrite!("shr-id8"; "(/ ?x 8)" => "(>> ?x 3)"));
     rules.push(rewrite!("bitor-zero"; "(| ?x 0)" => "?x"));
 
-    rules.push(rewrite!("and-id"; "(&& ?x true)" => "?x"));
-    rules.push(rewrite!("and-id"; "(&& ?x false)" => "false"));
-    rules.push(rewrite!("or-id"; "(|| ?x true)" => "true"));
-    rules.push(rewrite!("or-id"; "(|| ?x false)" => "?x"));
+    rules.push(rewrite!("bitand-all"; "(& ?x -1)" => "?x")); // two's complement all-ones
+    rules.push(rewrite!("bitand-zero"; "(& ?x 0)" => "0"));
+    rules.push(rewrite!("bitor-all";  "(| ?x -1)" => "-1"));
 
+    // bools
+    // Idempotence
+    rules.push(rewrite!("and-idempotent"; "(&& ?x ?x)" => "?x"));
+    rules.push(rewrite!("or-idempotent";  "(|| ?x ?x)" => "?x"));
+
+    // Absorption
+    rules.push(rewrite!("and-absorption"; "(&& ?x (|| ?x ?y))" => "?x"));
+    rules.push(rewrite!("or-absorption";  "(|| ?x (&& ?x ?y))" => "?x"));
+
+    // Distributivity
+    rules.push(rewrite!("and-distrib-or";
+    "(&& ?x (|| ?y ?z))" => "(|| (&& ?x ?y) (&& ?x ?z))"));
+    rules.push(rewrite!("or-distrib-and";
+    "(|| ?x (&& ?y ?z))" => "(&& (|| ?x ?y) (|| ?x ?z))"));
+
+    // Constant conditionals
+    rules.push(rewrite!("if-true";  "(if true  ?t ?e)" => "?t"));
+    rules.push(rewrite!("if-false"; "(if false ?t ?e)" => "?e"));
+
+    //distribute
     rules.push(rewrite!("distribute-add"; "(* ?a (+ ?b ?c))" => "(+ (* ?a ?b) (* ?a ?c))"));
     rules.push(rewrite!("distribute-sub"; "(* ?a (- ?b ?c))" => "(- (* ?a ?b) (* ?a ?c))"));
     rules.push(rewrite!("distribute-shl"; "(* ?a (<< ?b ?c))" => "(<< (* ?a ?b) ?c)"));
     rules.push(rewrite!("distribute-shr"; "(* ?a (>> ?b ?c))" => "(>> (* ?a ?b) ?c)"));
     rules.push(rewrite!("distribute-bitor"; "(* ?a (| ?b ?c))" => "(| (* ?a ?b) (* ?a ?c))"));
+
+    rules.push(rewrite!("lte-from-lt-eq";
+    "(<= ?a ?b)" => "(|| (< ?a ?b) (== ?a ?b))"));
+    rules.push(rewrite!("gte-from-gt-eq";
+    "(>= ?a ?b)" => "(|| (> ?a ?b) (== ?a ?b))"));
+
+    // COMPLICATED ARITHMETIC
+    rules.push(rewrite!("sub-to-add"; "(- ?a ?b)" => "(+ ?a (* -1 ?b))"));
+
+    // Negation rules
+    rules.push(rewrite!("double-neg"; "(* -1 (* -1 ?x))" => "?x"));
+    rules.push(rewrite!("neg-zero"; "(* -1 0)" => "0"));
+
+    // Factor common term out of a sum
+    rules.push(rewrite!("factor-add";
+        "(+ (* ?a ?b) (* ?a ?c))" => "(* ?a (+ ?b ?c))"));
+
+    // Combine like terms (simple case)
+    rules.push(rewrite!("add-same";
+        "(+ ?x ?x)" => "(* 2 ?x)"));
+
+    // Power/exponent simple identities
+    rules.push(rewrite!("exp-1"; "(** ?x 1)" => "?x"));
+    rules.push(rewrite!("exp-0"; "(** ?x 0)" => "1"));
+    rules.push(rewrite!("mul-exp-same-base";
+        "(* (** ?x ?a) (** ?x ?b))" => "(** ?x (+ ?a ?b))"));
+
+    //tuples structs arrays
+    // Project over tuple construction
+    // assuming (project (tuple ?x ?y) 0) means first element, etc.
+    rules.push(rewrite!("project-tuple-0";
+    "(project (tuple ?x ?y) 0)" => "?x"));
+    rules.push(rewrite!("project-tuple-1";
+    "(project (tuple ?x ?y) 1)" => "?y"));
+
+    // Same idea for structs if you encode them positionally
+    rules.push(rewrite!("project-struct-0";
+    "(project (struct ?x ?y) 0)" => "?x"));
+    rules.push(rewrite!("project-struct-1";
+    "(project (struct ?x ?y) 1)" => "?y"));
+
+    // Array literal + index
+    rules.push(rewrite!("arrayliteral-index-0";
+    "(arrayindex (arrayliteral ?x ?y) 0)" => "?x"));
+    rules.push(rewrite!("arrayliteral-index-1";
+    "(arrayindex (arrayliteral ?x ?y) 1)" => "?y"));
 
     if cfg.commutation {
         rules.push(rewrite!("commute-add"; "(+ ?a ?b)" => "(+ ?b ?a)"));
@@ -467,6 +533,26 @@ fn expr_to_egg(
 
     type_span_map.insert(id.into(), expr.ty, expr.span);
     id
+}
+
+/// Build a new type map from a RecExpr by looking up canonical IDs in the egraph.
+fn rebuild_type_map_from_recexpr(
+    rec_expr: &RecExpr<TirLang>,
+    egraph: &EGraph<TirLang, ()>,
+    original_type_map: &TypeSpanMap,
+) -> TypeSpanMap {
+    let mut new_map = TypeSpanMap::new(original_type_map.default_span);
+
+    // Look up all nodes in the RecExpr to get their canonical IDs
+    if let Some(canonical_ids) = egraph.lookup_expr_ids(rec_expr) {
+        for (rec_expr_idx, canonical_id) in canonical_ids.iter().enumerate() {
+            // Look up the type using the canonical ID from the original type map
+            let (ty, span) = original_type_map.get((*canonical_id).into());
+            new_map.insert(rec_expr_idx, ty, span);
+        }
+    }
+
+    new_map
 }
 
 /// Convert a RecExpr node at the given index to an Expr.
@@ -1096,9 +1182,12 @@ pub fn main(tcx: Tcx, tir: Program) -> (Tcx, Program) {
         .map(|(mut func, body_id)| {
             let (_cost, optimized_rec_expr) = extractor.find_best(body_id);
 
+            // Rebuild the type map for this RecExpr by looking up canonical IDs in the egraph
+            let new_type_map =
+                rebuild_type_map_from_recexpr(&optimized_rec_expr, &runner.egraph, &type_span_map);
+
             let root_idx = Id::from(optimized_rec_expr.as_ref().len() - 1);
-            // func.body = rec_expr_to_expr(&optimized_rec_expr, body_id, &type_span_map); not sure why this doesn't work
-            func.body = rec_expr_to_expr(&optimized_rec_expr, root_idx, &type_span_map);
+            func.body = rec_expr_to_expr(&optimized_rec_expr, root_idx, &new_type_map);
             func
         })
         .collect();

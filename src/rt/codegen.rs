@@ -668,6 +668,7 @@ impl CodegenFunc<'_, '_> {
                 instrs.struct_get(closure_ty_idx, 0);
 
                 let bc::TypeKind::Func { inputs, output } = f.ty().kind() else {
+                    println!("{f:?} is not a function");
                     panic!("{ty:?} is not a function")
                 };
                 let params = [REFSTRUCT]
