@@ -1107,49 +1107,45 @@ pub fn main(tcx: Tcx, tir: Program) -> (Tcx, Program) {
     for func in tir.functions() {
         let body_id = expr_to_egg(&func.body, &mut egraph, &mut type_span_map);
 
-        // if std::env::var("RUN_BENCH").is_ok() {
-        //     let mut recexpr = RecExpr::<TirLang>::default();
-        //     let root = expr_to_recexpr(&func.body, &mut recexpr);
-
-        //     let limits = vec![5, 10, 20, 40, 80];
-        //     let csv_name = format!("bench_{}.csv", func.name);
-        //     let extractor = Extractor::new(&egraph, AstSize);
-        //     let (_c, recexpr) = extractor.find_best(body_id);
-
-        //     sweep(recexpr.clone(), &limits, "smart", &csv_name);
-
-        //     println!("[bench] wrote {}", csv_name);
-        // }
         if std::env::var("RUN_BENCH").is_ok() {
-            let configs = vec![
-                ("full", AblationConfig::full()),
-                ("no_comm", AblationConfig::no_comm()),
-                ("no_identity", AblationConfig::no_identity()),
-                ("no_zero", AblationConfig::no_zero()),
-                ("no_self_compare", AblationConfig::no_self_compare()),
-                ("no_assoc", AblationConfig::no_assoc()),
-            ];
-            let mut eg = EGraph::<TirLang, ()>::default();
-            let mut map = TypeSpanMap::new(Span::DUMMY);
-            let root = expr_to_egg(&func.body, &mut eg, &mut map);
-            let full_rules = make_rules(AblationConfig::full());
-            let runner = Runner::default()
-                .with_egraph(eg)
-                .with_iter_limit(30)
-                .run(&full_rules);
-            let extractor = egg::Extractor::new(&runner.egraph, AstSize);
-            let (_c, recexpr) = extractor.find_best(root);
-            let limits = vec![5, 10, 20, 40, 80];
+            let mut recexpr = RecExpr::<TirLang>::default();
+            let root = expr_to_recexpr(&func.body, &mut recexpr);
 
-            for (name, cfg) in configs {
-                let rules = make_rules(cfg);
-                let csv_path = format!("output_{}.csv", name);
-                sweep_with_rules(recexpr.clone(), &limits, "smart", rules, &csv_path);
-            }
-            println!(
-                "full: means full rule set; no_comm: no commutativity rules (like a + b → b + a); no_identity: no identity rules (like x + 0 → x); no_zero: no zero rules (x * 0 → 0); no_self_compare: no self-comparison rules ; no_assoc: no associativity rules (like (a + b) + c → a + (b + c));"
-            );
+            let limits = vec![5, 10, 20, 40, 80];
+            let csv_name = format!("bench_{}.csv", func.name);
+            let extractor = Extractor::new(&egraph, AstSize);
+            let (_c, recexpr) = extractor.find_best(body_id);
+
+            sweep(recexpr.clone(), &limits, "ast", &csv_name);
+
+            println!("[bench] wrote {}", csv_name);
         }
+
+        // let mut recexpr = RecExpr::<TirLang>::default();
+        // let _root = expr_to_recexpr(&func.body, &mut recexpr);
+
+        // let limits = vec![5, 10, 20, 40, 80];
+
+        // // =============== (2) Baseline: full rule set ===============
+        // let csv_path = format!("bench_full_{}.csv", func.name);
+        // sweep(recexpr.clone(), &limits, "smart", &csv_path);
+        // println!("[bench] wrote {}", csv_path);
+
+        // // =============== (3) Ablation experiment ===============
+        // let configs = vec![
+        //     ("no_comm", AblationConfig::no_comm()),
+        //     ("no_identity", AblationConfig::no_identity()),
+        //     ("no_zero", AblationConfig::no_zero()),
+        //     ("no_self_compare", AblationConfig::no_self_compare()),
+        //     ("no_assoc", AblationConfig::no_assoc()),
+        // ];
+
+        // for (name, cfg) in configs {
+        //     let rules = make_rules(cfg);
+        //     let csv_path = format!("bench_{}_{}.csv", func.name, name);
+        //     sweep_with_rules(recexpr.clone(), &limits, "smart", rules, &csv_path);
+        //     println!("[bench] wrote {}", csv_path);
+        // }
 
         function_data.push((func.clone(), body_id));
     }
@@ -1191,19 +1187,6 @@ pub fn main(tcx: Tcx, tir: Program) -> (Tcx, Program) {
             func
         })
         .collect();
-
-    // println!(
-    //     "Rewrote \n {:?} \n into \n {:?}",
-    //     tir,
-    //     Program::new(optimized_functions.clone())
-    // );
-    // println!(
-    //     "[bench] nodes={} classes={} saturated={} time_limit_hit={}",
-    //     runner.egraph.total_size(),
-    //     runner.egraph.number_of_classes(),
-    //     runner.stop_reason == Some(StopReason::Saturated),
-    //     runner.stop_reason == Some(StopReason::TimeLimit),
-    // );
 
     (tcx, Program::new(optimized_functions))
 }
