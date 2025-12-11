@@ -1,0 +1,4 @@
+fn main() {
+  let x = 999 in
+  println(int_to_string(x * 1 * 1 * 0 * 1 * 1))
+}

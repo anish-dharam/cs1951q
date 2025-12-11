@@ -1,0 +1,4 @@
+fn main() {
+  let x = 42 in
+  println(int_to_string(x + x))
+}

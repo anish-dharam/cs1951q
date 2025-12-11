@@ -1,0 +1,4 @@
+fn main() {
+  let x = 8 in
+  println(int_to_string((x * 1) + (x * 1)))
+}

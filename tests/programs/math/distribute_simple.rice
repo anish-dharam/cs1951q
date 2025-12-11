@@ -1,0 +1,6 @@
+fn main() {
+  let a = 3 in
+  let b = 4 in
+  let c = 5 in
+  println(int_to_string(a * (b + c)))
+}
