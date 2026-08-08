@@ -1,5 +1,7 @@
 # The Rice programming language
 
+This repository contains my work for Brown's CSCI 1951Q, built on the course-provided Rice compiler scaffold. I extended the compiler with language features, type inference, dataflow and pointer/escape analyses, taint analysis, and symbolic execution. For the two-person final project, Jiaying Cheng and I built an e-graph optimizer; my primary contributions included translating between Rice's typed intermediate representation and the e-graph, preserving type and source-span information, integrating the optimization pass, and debugging its output.
+
 ## Project Structure
 
 This repository contains the Rice compiler implementation, including an e-graph-based term rewriting optimization pass.
